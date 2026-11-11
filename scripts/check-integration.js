@@ -5,6 +5,7 @@
 //
 //   GITHUB_TOKEN=ghp_... npm run check-integration -- github --owner acme --repo shop
 //   JIRA_TOKEN=...       npm run check-integration -- jira --base https://team.atlassian.net --email you@co.com --project PROJ
+//   JIRA_TOKEN=...       npm run check-integration -- jira --server --base https://jira.example.com --project PROJ   (Server / Data Center, personal access token)
 //
 // By default only reads (a connection test). Add --create to also file ONE clearly labelled throwaway issue
 // (Jira also gets a tiny PNG attachment) so you can see the real result; close or delete it afterwards.
@@ -24,10 +25,10 @@ let cfg;
 try {
   cfg = kind === 'github'
     ? { base: validateBase(opt('base', 'https://api.github.com'), 'GitHub API URL'), owner: opt('owner'), repo: opt('repo'), labels: ['bug'] }
-    : { base: validateBase(opt('base'), 'Jira site URL'), email: opt('email'), projectKey: opt('project').toUpperCase(), issueType: opt('issue-type', 'Bug'), labels: [] };
+    : { base: validateBase(opt('base'), 'Jira site URL'), variant: has('server') ? 'server' : 'cloud', email: opt('email'), projectKey: opt('project').toUpperCase(), issueType: opt('issue-type', 'Bug'), labels: [] };
 } catch (e) { die(e.message); }
 if (kind === 'github' && (!cfg.owner || !cfg.repo)) die('--owner and --repo are required');
-if (kind === 'jira' && (!cfg.email || !cfg.projectKey)) die('--email and --project are required (and --base)');
+if (kind === 'jira' && ((cfg.variant === 'cloud' && !cfg.email) || !cfg.projectKey)) die('--project is required, and --email for Jira Cloud (and --base). For Jira Server / Data Center add --server and use a personal access token.');
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 const sampleBug = {

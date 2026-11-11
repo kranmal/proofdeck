@@ -41,12 +41,24 @@ All of that user's sessions are ended.
 - **Create bug from a failed step**: expected result, actual result, screenshots and an editable *steps to reproduce*
   (pre-filled from the steps up to the failure, including which called case each came from and the data set used).
 - **Screenshot annotator** (arrow, box, pen, text) and attachments: images, PDF, text/log, CSV, JSON, ZIP, MP4, WebM.
-- **Jira Cloud / GitHub**: send a bug as an issue (Jira gets the attachments; GitHub's API cannot take images).
+- **Jira Cloud, Jira Server / Data Center and GitHub**: send a bug as an issue (Jira gets the attachments; GitHub's API cannot take images).
+  Optional **two-way status sync**: closing the issue resolves the bug (checked every few minutes, or instantly through a webhook) and,
+  if you switch it on, resolving the bug closes the issue. Server / Data Center uses a personal access token and REST v2.
+- **Notifications**: in-app and email (your own SMTP server), instant or a daily summary per person, assigned/mentioned/status/due
+  reminders, and password reset by email. Email is off until an admin configures it.
+- **Custom fields** (text, number, select, date, checkbox) on cases, bugs and cycles, optionally required.
+- **Review and approval**: ask a colleague to review a case; approve or request changes with a note. Admins can require that approval
+  only happens through a review. **Gherkin (BDD)** cases: write a Feature or Scenario Outline; each example row becomes a run.
+- **Due dates**: a cycle has start and due dates, an *Overdue* pill and filter, an overview tile and one reminder a day to the people with runs left.
+- **Bulk edit** test cases (priority, status, labels) and bugs (status, severity, priority, assignee); **report filters** by date, folder, label and plan.
+- **Activity** (admins): an audit log of who changed what, and a sign-in history including failed attempts. Everyone can see where they are
+  signed in and sign other devices out. API tokens can expire and be read-only.
 - **Import** CSV / Excel (column mapping, Zephyr-style one row per step, issue coverage becomes requirement links, HTML rich text can be
-  stripped) and **export** CSV / Excel. Importing can **update existing cases** by ID or by title and folder instead of making duplicates:
+  stripped; Excel dates arrive as dates; **Gherkin scripts, data sets (JSON) and “Call test case KEY” steps** are carried by the `BDD Script`,
+  `Data Sets` and step columns, so an export imports back faithfully) and **export** CSV / Excel. Importing can **update existing cases** by ID or by title and folder instead of making duplicates:
   only the mapped columns change, steps are replaced only if the file has steps, and a blank priority/status never overwrites.
 - **CI results API**: record automated test results from any pipeline (see below).
-- **Reports**: results per cycle, coverage of each case, failure hotspots, flaky tests, bug stats, tester activity, requirement coverage.
+- **Reports**: results per cycle, coverage of each case, failure hotspots, flaky tests, slowest automated tests (from CI `duration_ms` / JUnit `time`), bug stats, tester activity, requirement coverage.
 - **Accounts**: roles *admin*, *tester*, *viewer* (read only). Everything is attributed: who wrote a version, ran a test, filed or was assigned a bug.
 
 ## CI results
@@ -91,11 +103,19 @@ curl -sS "$URL/api/ci/cycle?name=Nightly&build=$BUILD_ID" -H "Authorization: Bea
 | `TRUST_PROXY` | unset | `1` trusts `X-Forwarded-Proto: https` from a reverse proxy to add `Secure` |
 | `PROOFDECK_SECRET` | unset | Encrypts stored Jira/GitHub tokens with this value instead of `data/secret.key` |
 | `PUBLIC_URL` | unset | Public address of Proofdeck, used for the link back from Jira/GitHub issues |
+| `NOTIFY_TICK_MS` | `10000` | How often the background worker looks for email to send, digests and reminders due |
+| `NOTIFY_DIGEST_MS` / `NOTIFY_DUE_MS` | `82800000` (23 h) | Minimum time between daily summaries / overdue reminders (tests shorten these) |
+| `SYNC_TICK_MS` | `300000` | How often linked Jira/GitHub issues are checked for status changes |
+| `AUDIT_KEEP_DAYS` / `LOGIN_KEEP_DAYS` | `365` / `180` | How long the audit log and sign-in history are kept (30 to 3650) |
 
 ## Security notes
 
 - Passwords are hashed with scrypt. Sessions are random tokens in `HttpOnly`, `SameSite=Strict` cookies; only a hash is stored.
 - Five wrong passwords lock that user and address for 30 seconds, doubling each time (kept in memory, resets on restart).
+- The audit log records the actor, action, address and a short list of safe fields (never passwords, tokens or other secrets). Sign-in history
+  stores the username as typed, address and browser string; both are visible to admins only (users see their own sign-ins).
+- Email passwords, webhook secrets and integration tokens are encrypted like the integration tokens. Password-reset links are only built from the
+  configured public address, never from the request's `Host` header.
 - Writes must be JSON and, when the browser sends an `Origin`, from the same site. Roles are enforced on the server;
   hiding buttons for viewers is only a convenience.
 - Integration tokens are encrypted (AES-256-GCM). Whoever can read both `proofdeck.db` and `secret.key` can decrypt them,
@@ -113,7 +133,7 @@ Everything lives in `DATA_DIR`. For a consistent copy while the server runs:
 
 ```
 server.js            core: database, cases, cycles, executions, bugs, HTTP
-routes/              auth, integrations, reports, plans, traceability, API tokens, CI
+routes/              auth, security (audit, sessions), notifications, integrations, sync, fields, review, reports, plans, traceability, API tokens, CI
 lib/                 auth, secret, integrations (Jira/GitHub), versions, links, import, export, JUnit reader
 scripts/             reset-password, check-integration
 public/              the web app (vanilla JS, no build step)
@@ -123,13 +143,15 @@ e2e/                 browser checks over the DevTools protocol
 
 ## Known limits
 
-- Jira support is Jira Cloud (API token). Jira Server/Data Center is not covered. GitHub issues cannot receive images.
+- GitHub issues cannot receive images. Jira Server / Data Center needs `https://` (plain `http://` is refused outside localhost) and a personal access token.
 - The Jira and GitHub integrations are tested against local fakes of their APIs. The GitHub client has also been checked against
   the real GitHub API for its error path. To verify yours with real credentials (read-only by default):
   `GITHUB_TOKEN=... npm run check-integration -- github --owner ORG --repo REPO` or
   `JIRA_TOKEN=... npm run check-integration -- jira --base https://team.atlassian.net --email you@co.com --project PROJ`
-  (add `--create` to file one clearly labelled throwaway issue).
+  (Server / Data Center: `--server --base https://jira.example.com --project PROJ`, no email; add `--create` to file one clearly labelled throwaway issue).
+  Two-way sync and the webhooks are likewise only tested against fakes.
 - Excel import is tested with hand-written workbooks shaped like Excel's own output, not files saved by Excel. Dates arrive as
-  their serial numbers.
+  dates, using the cell's number format (1900 and 1904 systems); a cell is only treated as a date if its format says so.
+- "Today" for overdue cycles and reminders is the server's UTC date, not each user's time zone.
 - Old `.xls` files are not read; save as `.xlsx` or CSV.
 - A single process with a single SQLite file: built for a team, not for large-scale hosting.
