@@ -432,6 +432,12 @@ td select { padding: 4px 8px; min-width: 130px; }
 .int-msg { font-weight: 600; }
 .int-msg.good { color: var(--pass); }
 .int-msg.bad { color: var(--fail); }
-body.viewer [data-act="new"], body.viewer a[href="#/cases/new"], body.viewer [data-act="import"], body.viewer [data-act="bulk-move"], body.viewer [data-act="bulk-delete"],
+body.viewer [data-act="new"], body.viewer a[href="#/cases/new"], body.viewer [data-act="import"], body.viewer [data-act="bulk-move"], body.viewer [data-act="bulk-edit"], body.viewer [data-act="bbulk-edit"],body.viewer [data-act="bulk-delete"],
 body.viewer [data-act="new-folder"], body.viewer [data-act="rename-folder"], body.viewer [data-act="delete-folder"], body.viewer [data-act="delete"],
 body.viewer [data-act^="add-"], body.viewer [data-act^="del-"], body.viewer [data-act="paste-data"], body.viewer [data-act="sync"], body.viewer [data-act="syncall"], body.viewer [data-act="add"], body.viewer [data-act="edit"], body.viewer [data-act="unplan"], body.viewer [data-act="new-cycle"], body.viewer [data-act="push"], body.viewer [data-act="restore"], body.viewer [data-act="clone"], body.viewer [data-act="comment"], body.viewer [data-act="save"] { display: none !important; }
+
+/* ---------- filters ---------- */
+.filterbar { padding: 12px 16px; }
+.filtergrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 14px; align-items: end; }
+.filterbar p { margin: 8px 0 0; }
+.filters { margin: 0 0 12px; }

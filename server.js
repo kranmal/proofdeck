@@ -190,6 +190,8 @@ addColumn('users', 'email', "TEXT NOT NULL DEFAULT ''");
 addColumn('users', 'notify_email', "TEXT NOT NULL DEFAULT 'instant'"); // instant | daily | off
 addColumn('users', 'digest_cursor', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('cycles', 'created_by', USER_REF);
+addColumn('cycles', 'start_date', "TEXT NOT NULL DEFAULT ''");
+addColumn('cycles', 'due_date', "TEXT NOT NULL DEFAULT ''");
 addColumn('cases', 'created_by', USER_REF);
 addColumn('cases', 'updated_by', USER_REF);
 addColumn('executions', 'executed_by', USER_REF);
@@ -218,6 +220,21 @@ addColumn('cases', 'approved_by', USER_REF);
 addColumn('cases', 'approved_at', 'TEXT');
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_case_autokey ON cases(project_id, automation_key) WHERE automation_key != ''");
 addColumn('executions', 'case_version', 'INTEGER');
+
+// Cycle dates are plain calendar dates (YYYY-MM-DD). A cycle is overdue when its due date has passed and tests are still to run.
+function cleanDates(body, current = {}) {
+  const pick = (k) => {
+    if (body[k] === undefined) return current[k] || '';
+    const v = str(body[k]).trim();
+    if (v && (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v)))) throw new HttpError(400, `${k === 'start_date' ? 'Start' : 'Due'} date must be a date (YYYY-MM-DD)`);
+    return v;
+  };
+  const start_date = pick('start_date'), due_date = pick('due_date');
+  if (start_date && due_date && start_date > due_date) throw new HttpError(400, 'The due date cannot be before the start date');
+  return { start_date, due_date };
+}
+const today = () => new Date().toISOString().slice(0, 10);
+const withOverdue = (c) => ({ ...c, overdue: !!c.due_date && !c.adhoc && c.due_date < today() && (c.not_executed + c.in_progress) > 0 });
 
 // A plan id belonging to the project, or null for "no plan".
 function planOrNull(projectId, v) {
@@ -509,6 +526,8 @@ route('GET', '/api/projects/:pid/summary', ({ params, user }) => {
         WHERE c.project_id=? AND c.adhoc=0 AND e.assignee_id=? AND e.status IN ('Not Executed','In Progress')`).get(pid, user.id).n,
       reviews: q("SELECT COUNT(*) n FROM cases WHERE project_id=? AND status='In Review' AND reviewer_id=?").get(pid, user.id).n,
     },
+    overdueCycles: q(`SELECT COUNT(*) n FROM (SELECT c.id FROM cycles c JOIN executions e ON e.cycle_id=c.id WHERE c.project_id=? AND c.adhoc=0 AND c.due_date!='' AND c.due_date<?
+      GROUP BY c.id HAVING SUM(e.status IN ('Not Executed','In Progress'))>0)`).get(pid, today()).n,
   };
 });
 
@@ -750,11 +769,42 @@ route('POST', '/api/projects/:pid/folders/delete', ({ params, body }) => {
   return tx(() => { moveFolder(params.pid, path, parentOf(path)); return { path: parentOf(path) }; });
 });
 
+// Change priority, status and/or labels on many cases at once. Content changes are versioned like any edit.
+function bulkUpdateCases(pid, ids, input, user) {
+  const f = input && typeof input === 'object' ? input : {};
+  const sets = {};
+  if (f.priority !== undefined && f.priority !== '') { checkEnum('cases', 'priority', f.priority); sets.priority = f.priority; }
+  if (f.status !== undefined && f.status !== '') { checkEnum('cases', 'status', f.status); sets.status = f.status; }
+  const lab = f.labels && typeof f.labels === 'object' ? { mode: str(f.labels.mode), tokens: str(f.labels.value).split(',').map((x) => x.trim()).filter(Boolean) } : null;
+  if (lab && !['set', 'add', 'remove'].includes(lab.mode)) throw new HttpError(400, 'Labels mode must be set, add or remove');
+  if (!Object.keys(sets).length && !(lab && (lab.tokens.length || lab.mode === 'set'))) throw new HttpError(400, 'Choose something to change');
+  return tx(() => {
+    let changed = 0;
+    for (const id of ids) {
+      const c = q('SELECT id, status, labels FROM cases WHERE id=? AND project_id=?').get(id, pid);
+      if (!c) continue;
+      if (sets.status) assertMayApprove(pid, c.status, sets.status, user);
+      const next = { ...sets };
+      if (lab) {
+        const cur = c.labels.split(',').map((x) => x.trim()).filter(Boolean);
+        const out = lab.mode === 'set' ? lab.tokens : lab.mode === 'add' ? [...cur, ...lab.tokens.filter((t, i) => !cur.some((x) => x.toLowerCase() === t.toLowerCase()) && lab.tokens.findIndex((y) => y.toLowerCase() === t.toLowerCase()) === i)] : cur.filter((x) => !lab.tokens.some((t) => t.toLowerCase() === x.toLowerCase()));
+        next.labels = out.join(', ');
+      }
+      const keys = Object.keys(next);
+      q(`UPDATE cases SET ${keys.map((k) => `${k}=?`).join(', ')}, updated_at=?, updated_by=? WHERE id=?`).run(...keys.map((k) => next[k]), now(), user.id, id);
+      versions.recordVersion(id, user.id, { note: 'Bulk edit' });
+      changed++;
+    }
+    return { count: changed };
+  });
+}
+
 route('POST', '/api/projects/:pid/cases/bulk', ({ params, body, user }) => {
   const ids = [...new Set((Array.isArray(body.ids) ? body.ids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 5000);
   if (!ids.length) throw new HttpError(400, 'No test cases selected');
   const folder = normFolder(body.folder);
   const action = str(body.action);
+  if (action === 'update') return bulkUpdateCases(params.pid, ids, body.fields, user);
   if (action !== 'move' && action !== 'delete') throw new HttpError(400, 'Unknown action');
   return tx(() => {
     const stmt = action === 'move' ? q('UPDATE cases SET folder=?, updated_at=? WHERE id=? AND project_id=?') : q('DELETE FROM cases WHERE id=? AND project_id=?');
@@ -819,9 +869,9 @@ route('GET', '/api/cycles/:id/export', ({ params, query }) => {
 
 // --- cycles ---
 route('GET', '/api/projects/:pid/cycles', ({ params }) =>
-  q(`SELECT c.id, c.key, c.name, c.environment, c.build, c.adhoc, c.created_at, c.plan_id,
+  q(`SELECT c.id, c.key, c.name, c.environment, c.build, c.adhoc, c.created_at, c.plan_id, c.start_date, c.due_date,
        (SELECT key FROM plans WHERE id=c.plan_id) AS plan_key, (SELECT name FROM plans WHERE id=c.plan_id) AS plan_name, ${CYCLE_COUNTS}
-     FROM cycles c LEFT JOIN executions e ON e.cycle_id=c.id WHERE c.project_id=? GROUP BY c.id ORDER BY c.id DESC`).all(params.pid));
+     FROM cycles c LEFT JOIN executions e ON e.cycle_id=c.id WHERE c.project_id=? GROUP BY c.id ORDER BY c.id DESC`).all(params.pid).map(withOverdue));
 
 route('POST', '/api/projects/:pid/cycles', ({ params, body, user }) => {
   const name = str(body.name).trim();
@@ -831,6 +881,7 @@ route('POST', '/api/projects/:pid/cycles', ({ params, body, user }) => {
     const id = Number(q('INSERT INTO cycles(project_id, key, name, description, environment, build, created_at, created_by, plan_id) VALUES (?,?,?,?,?,?,?,?,?)')
       .run(params.pid, key, name, str(body.description), str(body.environment).trim(), str(body.build).trim(), now(), user.id, planOrNull(params.pid, body.plan_id)).lastInsertRowid);
     addCasesToCycle(id, params.pid, body.caseIds);
+    { const d = cleanDates(body); q('UPDATE cycles SET start_date=?, due_date=? WHERE id=?').run(d.start_date, d.due_date, id); }
     if (body.fields !== undefined) fieldsApi.save(params.pid, 'cycle', id, body.fields);
     return { id, key };
   });
@@ -841,6 +892,7 @@ route('GET', '/api/cycles/:id', ({ params }) => {
   c.created_by_name = (q('SELECT display_name FROM users WHERE id=?').get(c.created_by || 0) || {}).display_name || '';
   const plan = c.plan_id ? q('SELECT key, name FROM plans WHERE id=?').get(c.plan_id) : null;
   c.fields = fieldsApi.read('cycle', c.id);
+  { const n = q('SELECT COALESCE(SUM(status IN (\'Not Executed\',\'In Progress\')),0) AS left FROM executions WHERE cycle_id=?').get(c.id); c.overdue = !!c.due_date && !c.adhoc && c.due_date < today() && n.left > 0; }
   c.plan_key = plan ? plan.key : ''; 
   c.plan_name = plan ? plan.name : '';
   c.executions = q(`SELECT e.id, e.case_id, e.case_key, e.case_title, e.status, e.executed_at, e.assignee_id, e.iteration, e.iteration_label,
@@ -863,6 +915,7 @@ route('PUT', '/api/cycles/:id', ({ params, body }) => {
       if (body[f] !== undefined) q(`UPDATE cycles SET ${f}=? WHERE id=?`).run(str(body[f]).trim().slice(0, 5000), c.id);
     }
     q('UPDATE cycles SET plan_id=? WHERE id=?').run(plan, c.id);
+    { const d = cleanDates(body, c); q('UPDATE cycles SET start_date=?, due_date=? WHERE id=?').run(d.start_date, d.due_date, c.id); }
     if (body.fields !== undefined) fieldsApi.save(c.project_id, 'cycle', c.id, body.fields);
     return { ok: true };
   });
@@ -1079,7 +1132,8 @@ route('DELETE', '/api/bug-comments/:id', ({ params, user }) => {
   return { ok: true };
 });
 
-route('PUT', '/api/bugs/:id', ({ params, body, user }) => {
+function updateBug(id, body, user) {
+  const params = { id };
   const before = need(q('SELECT * FROM bugs WHERE id=?').get(params.id), 'Bug');
   if (body.title !== undefined && !str(body.title).trim()) throw new HttpError(400, 'Title is required');
   update('bugs', params.id, body, ['title', 'status', 'severity', 'priority', 'environment', 'expected', 'actual', 'steps_to_reproduce']);
@@ -1097,6 +1151,21 @@ route('PUT', '/api/bugs/:id', ({ params, body, user }) => {
     }
   }
   return { ok: true };
+}
+route('PUT', '/api/bugs/:id', ({ params, body, user }) => updateBug(params.id, body, user));
+
+route('POST', '/api/projects/:pid/bugs/bulk', ({ params, body, user }) => {
+  const ids = [...new Set((Array.isArray(body.ids) ? body.ids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 2000);
+  if (!ids.length) throw new HttpError(400, 'No bugs selected');
+  const change = {};
+  for (const k of ['status', 'severity', 'priority']) if (body[k] !== undefined && body[k] !== '') change[k] = body[k];
+  if (body.assignee_id !== undefined && body.assignee_id !== '__keep__') change.assignee_id = body.assignee_id;
+  if (!Object.keys(change).length) throw new HttpError(400, 'Choose something to change');
+  return tx(() => {
+    let n = 0;
+    for (const id of ids) { if (q('SELECT 1 FROM bugs WHERE id=? AND project_id=?').get(id, params.pid)) { updateBug(id, change, user); n++; } }
+    return { count: n };
+  });
 });
 
 route('DELETE', '/api/bugs/:id', ({ params }) => tx(() => {

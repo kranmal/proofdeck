@@ -213,8 +213,22 @@ function hbars(items, { empty }) {
 
 async function viewReports() {
   let n = Number(sessionStorage.getItem('rcycles')) || 10, mode = 'count';
-  const data = () => api('GET', `/api/projects/${STATE.pid}/reports?cycles=${n}`);
-  let r = await data();
+  let filters = {};
+  try { filters = JSON.parse(sessionStorage.getItem('rfilters') || '{}'); } catch { filters = {}; }
+  const fq = () => Object.entries(filters).filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('');
+  const filtered = () => Object.values(filters).some(Boolean);
+  const data = () => api('GET', `/api/projects/${STATE.pid}/reports?cycles=${n}${fq()}`);
+  let r;
+  const [folderList, planList] = await Promise.all([api('GET', `/api/projects/${STATE.pid}/folders`).catch(() => []), api('GET', `/api/projects/${STATE.pid}/plans`)]);
+  try { r = await data(); } catch (err) { filters = {}; r = await data(); }
+  const filterBar = () => `<section class="card filterbar" aria-label="Report filters"><div class="filtergrid">
+      <label>From<input type="date" data-rf="from" value="${esc(filters.from || '')}"></label>
+      <label>To<input type="date" data-rf="to" value="${esc(filters.to || '')}"></label>
+      <label>Folder<select data-rf="folder"><option value="">All folders</option>${(folderList || []).map((f) => { const v = typeof f === 'string' ? f : f.path || f.name; return `<option${filters.folder === v ? ' selected' : ''}>${esc(v)}</option>`; }).join('')}</select></label>
+      <label>Label<input data-rf="label" value="${esc(filters.label || '')}" placeholder="e.g. smoke"></label>
+      <label>Plan<select data-rf="plan_id"><option value="">All plans</option>${planList.map((p) => `<option value="${p.id}"${String(filters.plan_id) === String(p.id) ? ' selected' : ''}>${esc(p.key)} ${esc(p.name)}</option>`).join('')}</select></label>
+      <span class="fbtns"><button type="button" class="btn small primary" data-act="apply-filters">Apply</button>${filtered() ? ' <button type="button" class="btn small ghost" data-act="clear-filters">Clear</button>' : ''}</span></div>
+      ${filtered() ? '<p class="muted">Filtered view. Dates apply to when cycles were created, tests were run and bugs were filed.</p>' : ''}</section>`;
   const trace = await api('GET', `/api/projects/${STATE.pid}/traceability`);
   const caseLink = (id, key) => (id ? `<a href="#/cases/${id}">${esc(key)}</a>` : esc(key));
 
@@ -228,6 +242,7 @@ async function viewReports() {
       <header class="head"><h1>Reports</h1><span>
         <label class="inline">Show <select id="rcycles" aria-label="Number of cycles">${[5, 10, 20, 30].map((v) => `<option${v === n ? ' selected' : ''}>${v}</option>`).join('')}</select> cycles</label>
         <button type="button" class="btn ghost" data-act="export">${withIcon('download', 'Export trend')}</button></span></header>
+      ${filterBar()}
       <section class="tiles">
         <div class="tile"><b>${lastRate === null ? '—' : lastRate + '%'}</b><span>Pass rate, latest cycle${last ? ` (${esc(last.key)})` : ''}</span></div>
         <div class="tile"><b>${cov['Never run']}</b><span>Test cases never run</span></div>
@@ -301,11 +316,18 @@ async function viewReports() {
     svg.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
   };
 
-  view.onclick = (e) => {
+  view.onclick = async (e) => {
+    const fa = e.target.closest('[data-act=apply-filters], [data-act=clear-filters]');
+    if (fa) {
+      filters = fa.dataset.act === 'clear-filters' ? {} : Object.fromEntries($$('[data-rf]', view).map((i) => [i.dataset.rf, i.value.trim()]));
+      try { sessionStorage.setItem('rfilters', JSON.stringify(filters)); } catch { /* ignore */ }
+      try { r = await data(); paint(); } catch (err) { fail(err); }
+      return;
+    }
     const m = e.target.closest('[data-mode]');
     if (m) { mode = m.dataset.mode; $$('[data-mode]', view).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mode))); drawTrend(); return; }
     if (e.target.closest('[data-act=export-trace]')) { openExport({ title: 'Export requirement coverage', base: `/api/projects/${STATE.pid}/traceability/export`, note: 'One row per requirement and test case, plus test cases without a requirement.' }); return; }
-    if (e.target.closest('[data-act=export]')) openExport({ title: 'Export cycle trend', base: `/api/projects/${STATE.pid}/reports/export`, scopes: [{ label: `Last ${n} cycles`, params: `cycles=${n}` }], note: 'One row per cycle with counts and pass rate.' });
+    if (e.target.closest('[data-act=export]')) openExport({ title: 'Export cycle trend', base: `/api/projects/${STATE.pid}/reports/export`, scopes: [{ label: `Last ${n} cycles${filtered() ? ' (with the current filters)' : ''}`, params: `cycles=${n}${fq()}` }], note: 'One row per cycle with counts and pass rate.' });
   };
   view.onchange = async (e) => {
     if (e.target.id !== 'rcycles') return;
@@ -999,6 +1021,7 @@ async function viewDashboard() {
       <div class="tile"><b>${rate}</b><span>Pass rate (${done} of ${t.total} executed)</span></div>
       <a class="tile" href="#/cycles"><b>${s.mine.runs}</b><span>Test runs assigned to you</span></a>
       <a class="tile" href="#/bugs"><b>${s.mine.bugs}</b><span>Open bugs assigned to you</span></a>
+      ${s.overdueCycles ? `<a class="tile" href="#/cycles" data-overdue><b>${s.overdueCycles}</b><span>Overdue test cycle${s.overdueCycles === 1 ? '' : 's'}</span></a>` : ''}
       ${s.mine.reviews ? `<a class="tile" href="#/cases" data-review><b>${s.mine.reviews}</b><span>Test cases waiting for your review</span></a>` : ''}
     </section>
     <section class="card">
@@ -1014,7 +1037,10 @@ async function viewDashboard() {
         <td>${pill(b.severity)}</td><td>${pill(b.status)}</td><td class="muted">${fmtDate(b.created_at)}</td></tr>`).join('')}</tbody></table>`
         : '<p class="empty">No bugs filed. Fail a step during a run and press “Create bug”.</p>'}
     </section>`;
-  view.onclick = (e) => { if (e.target.closest('[data-review]')) { CASES_UI.status = 'In Review'; CASES_UI.folder = ''; } };
+  view.onclick = (e) => {
+    if (e.target.closest('[data-review]')) { CASES_UI.status = 'In Review'; CASES_UI.folder = ''; }
+    if (e.target.closest('[data-overdue]')) { try { sessionStorage.setItem('cyfilter', 'overdue'); } catch { /* ignore */ } }
+  };
 }
 
 // ---------- test cases ----------
@@ -1219,6 +1245,7 @@ async function viewCases() {
     const n = U.sel.size;
     $('#bulk').hidden = !n;
     $('#bulk').innerHTML = n ? `<strong>${n} selected</strong>
+      <button type="button" class="btn small ghost" data-act="bulk-edit">${withIcon('pencil', 'Edit…')}</button>
       <button type="button" class="btn small ghost" data-act="bulk-move">${withIcon('move', 'Move to folder')}</button>
       <button type="button" class="btn small ghost" data-act="bulk-export">${withIcon('download', 'Export')}</button>
       <button type="button" class="btn small danger" data-act="bulk-delete">${withIcon('trash', 'Delete')}</button>
@@ -1276,6 +1303,23 @@ async function viewCases() {
         U.folder = r.path;
         U.sel.clear();
         await refresh();
+      } else if (act === 'bulk-edit') {
+        const n = U.sel.size;
+        openDialog(`<h2>Edit ${n} test case${n === 1 ? '' : 's'}</h2><p class="muted">Only what you choose changes. Each change is saved as a new version.</p>
+          <div class="two"><label>Priority<select name="priority"><option value="">Leave as it is</option>${['High', 'Medium', 'Low'].map((o) => `<option>${o}</option>`).join('')}</select></label>
+            <label>Status<select name="status"><option value="">Leave as it is</option>${['Draft', 'In Review', 'Approved', 'Deprecated'].map((o) => `<option>${o}</option>`).join('')}</select></label></div>
+          <div class="two"><label>Labels<select name="mode"><option value="">Leave as they are</option><option value="add">Add these labels</option><option value="remove">Remove these labels</option><option value="set">Replace all labels with</option></select></label>
+            <label>Label list<input name="labels" placeholder="smoke, ui" aria-describedby="lh"></label></div><p class="muted" id="lh">Separate labels with commas.</p>
+          <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Apply to ${n}</button></footer>`,
+          async (fd) => {
+            const fields = {};
+            if (fd.get('priority')) fields.priority = fd.get('priority');
+            if (fd.get('status')) fields.status = fd.get('status');
+            if (fd.get('mode')) fields.labels = { mode: fd.get('mode'), value: fd.get('labels') };
+            const r = await api('POST', `/api/projects/${STATE.pid}/cases/bulk`, { ids: [...U.sel], action: 'update', fields });
+            toast(`Updated ${r.count} test case${r.count === 1 ? '' : 's'}`);
+            await refresh();
+          });
       } else if (act === 'bulk-move') {
         pathDialog({ title: `Move ${U.sel.size} test case${U.sel.size === 1 ? '' : 's'}`, label: 'Folder path', hint: 'Pick an existing folder or type a new path. Leave empty to remove the folder.', value: U.folder, required: false, cta: 'Move' },
           (path) => moveCases([...U.sel], path));
@@ -1589,13 +1633,14 @@ async function openNewCycle({ planId = null } = {}) {
   openDialog(`<h2>New test cycle</h2>
     <label>Name<input name="name" required maxlength="120" placeholder="e.g. Release 2.3 regression" autofocus></label>
     <div class="two"><label>Environment<input name="environment" placeholder="Staging · Chrome"></label><label>Build / version<input name="build" placeholder="2.3.0-rc1"></label></div>
+    <div class="two"><label>Start date<input type="date" name="start_date"></label><label>Due date<input type="date" name="due_date"></label></div>
     ${planId ? '' : `<label>Test plan<select name="plan_id"><option value="">No plan</option>${plans.map((p) => `<option value="${p.id}">${esc(p.key)} ${esc(p.name)}</option>`).join('')}</select></label>`}
     ${cyDefs.length ? `<div class="form">${fieldInputs(cyDefs, {}, 'cy')}</div>` : ''}
     <h3>Test cases</h3>${casePicker(cases)}
     <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Create cycle</button></footer>`,
     async (fd) => {
       const r = await api('POST', `/api/projects/${STATE.pid}/cycles`, {
-        name: fd.get('name'), environment: fd.get('environment'), build: fd.get('build'),
+        name: fd.get('name'), environment: fd.get('environment'), build: fd.get('build'), start_date: fd.get('start_date'), due_date: fd.get('due_date'),
         plan_id: planId || (fd.get('plan_id') ? Number(fd.get('plan_id')) : null), caseIds: fd.getAll('case').map(Number), ...(cyDefs.length ? { fields: readFields(dlg, cyDefs) } : {}),
       });
       location.hash = `#/cycles/${r.id}`;
@@ -1671,14 +1716,22 @@ async function viewPlan(id) {
   };
 }
 
+const dueCell = (c) => (!c.due_date ? '<span class="muted">—</span>' : `${esc(c.due_date)}${c.overdue ? ` <span class="pill fail">Overdue</span>` : ''}`);
+
 async function viewCycles() {
-  const cycles = await api('GET', `/api/projects/${STATE.pid}/cycles`);
+  const all = await api('GET', `/api/projects/${STATE.pid}/cycles`);
+  let cyFilter = 'all';
+  try { cyFilter = sessionStorage.getItem('cyfilter') || 'all'; } catch { /* ignore */ }
+  const left = (c) => c.not_executed + c.in_progress;
+  const cycles = all.filter((c) => cyFilter === 'all' || (cyFilter === 'overdue' ? c.overdue : cyFilter === 'finished' ? !c.adhoc && c.total > 0 && left(c) === 0 : !c.adhoc && (left(c) > 0 || c.total === 0)));
   view.innerHTML = `
     <header class="head"><h1>Test cycles</h1><button class="btn primary" data-act="new">${withIcon('plus', 'New cycle')}</button></header>
-    <section class="card flush">${cycles.length ? `<table><thead><tr><th>Cycle</th><th>Plan</th><th>Environment</th><th>Build</th><th class="w-bar">Progress</th><th class="num">Pass</th><th class="num">Fail</th><th class="num">Blocked</th><th class="num">Left</th></tr></thead><tbody>
-      ${cycles.map((c) => `<tr><td><a href="#/cycles/${c.id}"><span class="key">${esc(c.key)}</span> ${esc(c.name)}</a></td><td>${c.plan_id ? `<a href="#/plans/${c.plan_id}">${esc(c.plan_name)}</a>` : '<span class="muted">—</span>'}</td><td>${c.adhoc ? '<span class="muted">Standalone</span>' : esc(c.environment)}</td><td>${esc(c.build)}</td>
+    <div class="filters"><select id="cyfilter" aria-label="Show">${[['all', 'All cycles'], ['active', 'Still to run'], ['overdue', 'Overdue'], ['finished', 'Finished']].map(([v, l]) => `<option value="${v}"${cyFilter === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+    <section class="card flush">${cycles.length ? `<table><thead><tr><th>Cycle</th><th>Plan</th><th>Environment</th><th>Build</th><th>Due</th><th class="w-bar">Progress</th><th class="num">Pass</th><th class="num">Fail</th><th class="num">Blocked</th><th class="num">Left</th></tr></thead><tbody>
+      ${cycles.map((c) => `<tr><td><a href="#/cycles/${c.id}"><span class="key">${esc(c.key)}</span> ${esc(c.name)}</a></td><td>${c.plan_id ? `<a href="#/plans/${c.plan_id}">${esc(c.plan_name)}</a>` : '<span class="muted">—</span>'}</td><td>${c.adhoc ? '<span class="muted">Standalone</span>' : esc(c.environment)}</td><td>${esc(c.build)}</td><td>${dueCell(c)}</td>
         <td>${bar(c)}</td><td class="num">${c.pass}</td><td class="num">${c.fail}</td><td class="num">${c.blocked}</td><td class="num">${c.not_executed + c.in_progress}</td></tr>`).join('')}
-      </tbody></table>` : '<p class="empty">No cycles yet. A cycle is one run of a set of test cases against a build.</p>'}</section>`;
+      </tbody></table>` : `<p class="empty">${all.length ? 'No cycles match this filter.' : 'No cycles yet. A cycle is one run of a set of test cases against a build.'}</p>`}</section>`;
+  view.onchange = (e) => { if (e.target.id === 'cyfilter') { try { sessionStorage.setItem('cyfilter', e.target.value); } catch { /* ignore */ } router(); } };
   view.onclick = (e) => { if (e.target.closest('[data-act=new]')) openNewCycle().catch(fail); };
 }
 
@@ -1694,7 +1747,7 @@ async function viewCycle(id) {
       <button class="btn ghost" data-act="export">${withIcon('download', 'Export results')}</button>
       ${c.adhoc ? '' : `<button class="btn ghost" data-act="add">${withIcon('plus', 'Add test cases')}</button>`}
       ${next ? `<a class="btn primary" href="#/run/${next.id}">${icon('play')}<span>${counts.pass + counts.fail + counts.blocked + counts.in_progress ? 'Continue' : 'Start'} testing</span></a>` : ''}</span></header>
-    <p class="meta">${[c.adhoc && c.description, c.environment, c.build && `Build ${c.build}`, `Created ${fmtDate(c.created_at)}`].filter(Boolean).map(esc).join(' · ')}${c.plan_id ? ` · Plan <a href="#/plans/${c.plan_id}">${esc(c.plan_key)} ${esc(c.plan_name)}</a>` : ''}${c.created_by_name ? ` · by ${esc(c.created_by_name)}` : ''}</p>
+    <p class="meta">${[c.adhoc && c.description, c.environment, c.build && `Build ${c.build}`, `Created ${fmtDate(c.created_at)}`].filter(Boolean).map(esc).join(' · ')}${c.plan_id ? ` · Plan <a href="#/plans/${c.plan_id}">${esc(c.plan_key)} ${esc(c.plan_name)}</a>` : ''}${c.due_date ? ` · Due ${esc(c.due_date)}` : ''}${c.overdue ? ' · <span class="pill fail">Overdue</span>' : ''}${c.created_by_name ? ` · by ${esc(c.created_by_name)}` : ''}</p>
     <section class="card">${bar(counts)}<p class="legend">${counts.pass} passed · ${counts.fail} failed · ${counts.blocked} blocked · ${counts.total - counts.pass - counts.fail - counts.blocked} remaining</p></section>
     <section class="card flush">${c.executions.length ? `<table><thead><tr><th>Test case</th><th>Status</th><th class="num">Steps done</th><th class="num">Bugs</th><th>Assignee</th><th>Last run</th><th></th></tr></thead><tbody>
       ${c.executions.map((e) => `<tr><td><a href="#/run/${e.id}"><span class="key">${esc(e.case_key)}</span> ${esc(e.case_title)}</a>${e.iteration ? ` <span class="muted">· data set ${e.iteration}: ${esc(e.iteration_label)}</span>` : ''}</td><td>${pill(e.status)}</td>
@@ -1721,10 +1774,11 @@ async function viewCycle(id) {
         openDialog(`<h2>Edit ${esc(c.key)}</h2>
           <label>Name<input name="name" required maxlength="200" value="${esc(c.name)}"></label>
           <div class="two"><label>Environment<input name="environment" value="${esc(c.environment)}"></label><label>Build / version<input name="build" value="${esc(c.build)}"></label></div>
+          <div class="two"><label>Start date<input type="date" name="start_date" value="${esc(c.start_date)}"></label><label>Due date<input type="date" name="due_date" value="${esc(c.due_date)}"></label></div>
           <label>Test plan<select name="plan_id"><option value="">No plan</option>${plans.map((p) => `<option value="${p.id}"${p.id === c.plan_id ? ' selected' : ''}>${esc(p.key)} ${esc(p.name)}</option>`).join('')}</select></label>
           ${cyDefs.length ? `<div class="form">${fieldInputs(cyDefs, c.fields, 'cy')}</div>` : ''}
           <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Save</button></footer>`,
-          async (fd) => { await api('PUT', `/api/cycles/${id}`, { name: fd.get('name'), environment: fd.get('environment'), build: fd.get('build'), plan_id: fd.get('plan_id') ? Number(fd.get('plan_id')) : null, ...(cyDefs.length ? { fields: readFields(dlg, cyDefs) } : {}) }); toast('Cycle saved'); router(); });
+          async (fd) => { await api('PUT', `/api/cycles/${id}`, { name: fd.get('name'), environment: fd.get('environment'), build: fd.get('build'), start_date: fd.get('start_date'), due_date: fd.get('due_date'), plan_id: fd.get('plan_id') ? Number(fd.get('plan_id')) : null, ...(cyDefs.length ? { fields: readFields(dlg, cyDefs) } : {}) }); toast('Cycle saved'); router(); });
       } else if (act === 'export') {
         openExport({ title: `Export results of ${c.key}`, base: `/api/cycles/${id}/export`, note: 'One row per step with its status, actual result and linked bugs.' });
       } else if (act === 'clone') {
@@ -1951,28 +2005,61 @@ async function viewRun(id) {
 async function viewBugs() {
   const bugs = await api('GET', `/api/projects/${STATE.pid}/bugs`);
   let status = 'active', who = '';
-  const rows = () => {
-    const list = bugs.filter((b) => (status === 'all' || (status === 'active' ? ['Open', 'In Progress'].includes(b.status) : b.status === status))
+  const sel = new Set();
+  const visibleBugs = () => bugs.filter((b) => (status === 'all' || (status === 'active' ? ['Open', 'In Progress'].includes(b.status) : b.status === status))
       && (!who || (who === 'me' ? b.assignee_id === STATE.user.id : !b.assignee_id)));
-    return list.length ? list.map((b) => `<tr><td><a href="#/bugs/${b.id}"><span class="key">${esc(b.key)}</span> ${esc(b.title)}</a></td>
+  const rows = () => {
+    const list = visibleBugs();
+    return list.length ? list.map((b) => `<tr><td class="cb"><input type="checkbox" data-sel="${b.id}"${sel.has(b.id) ? ' checked' : ''} aria-label="Select ${esc(b.key)}"></td><td><a href="#/bugs/${b.id}"><span class="key">${esc(b.key)}</span> ${esc(b.title)}</a></td>
       <td>${pill(b.severity)}</td><td>${pill(b.priority)}</td><td>${pill(b.status)}</td><td>${esc(b.assignee_name || '—')}</td>
       <td class="muted">${b.case_key ? `${esc(b.case_key)} step ${b.step_no}` : 'Manual'}</td><td class="num">${b.shots || ''}</td><td class="muted">${fmtDate(b.created_at)}</td></tr>`).join('')
-      : '<tr><td colspan="8" class="empty">No bugs here.</td></tr>';
+      : '<tr><td colspan="9" class="empty">No bugs here.</td></tr>';
   };
   view.innerHTML = `
     <header class="head"><h1>Bugs</h1><button class="btn primary" data-act="new">${withIcon('plus', 'New bug')}</button></header>
     <div class="filters"><select id="bstatus" aria-label="Status filter">
       <option value="active">Open &amp; in progress</option><option value="all">All</option><option>Open</option><option>In Progress</option><option>Resolved</option><option>Closed</option></select>
       <select id="bwho" aria-label="Assignee filter"><option value="">Anyone</option><option value="me">Assigned to me</option><option value="none">Unassigned</option></select></div>
-    <section class="card flush"><table><thead><tr><th>Bug</th><th>Severity</th><th>Priority</th><th>Status</th><th>Assignee</th><th>Found by</th><th class="num">Screenshots</th><th>Created</th></tr></thead>
+    <div class="bulk" id="bbulk" hidden></div>
+    <section class="card flush"><table><thead><tr><th class="cb"><input type="checkbox" id="bsel-all" aria-label="Select all shown"></th><th>Bug</th><th>Severity</th><th>Priority</th><th>Status</th><th>Assignee</th><th>Found by</th><th class="num">Screenshots</th><th>Created</th></tr></thead>
     <tbody id="rows">${rows()}</tbody></table></section>`;
+  const paintBulk = () => {
+    const bar = $('#bbulk');
+    bar.hidden = !sel.size;
+    bar.innerHTML = sel.size ? `<strong>${sel.size} selected</strong> <button type="button" class="btn small ghost" data-act="bbulk-edit">${withIcon('pencil', 'Edit…')}</button>
+      <button type="button" class="btn small ghost" data-act="bbulk-clear">${withIcon('x', 'Clear')}</button>` : '';
+    const all = $('#bsel-all'), shown = visibleBugs(), picked = shown.filter((b) => sel.has(b.id)).length;
+    all.checked = !!shown.length && picked === shown.length;
+    all.indeterminate = picked > 0 && picked < shown.length;
+  };
+  const repaint = () => { $('#rows').innerHTML = rows(); paintBulk(); };
   view.onchange = (e) => {
-    if (e.target.id === 'bstatus') status = e.target.value;
-    else if (e.target.id === 'bwho') who = e.target.value;
+    const t = e.target;
+    if (t.id === 'bstatus') status = t.value;
+    else if (t.id === 'bwho') who = t.value;
+    else if (t.id === 'bsel-all') { for (const b of visibleBugs()) { if (t.checked) sel.add(b.id); else sel.delete(b.id); } }
+    else if (t.matches('[data-sel]')) { const id = Number(t.dataset.sel); if (t.checked) sel.add(id); else sel.delete(id); }
     else return;
-    $('#rows').innerHTML = rows();
+    repaint();
   };
   view.onclick = (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'bbulk-clear') { sel.clear(); repaint(); return; }
+    if (act === 'bbulk-edit') {
+      openDialog(`<h2>Edit ${sel.size} bug${sel.size === 1 ? '' : 's'}</h2><p class="muted">Only what you choose changes. People assigned to a bug are notified as usual.</p>
+        <div class="two"><label>Status<select name="status"><option value="">Leave as it is</option>${['Open', 'In Progress', 'Resolved', 'Closed'].map((o) => `<option>${o}</option>`).join('')}</select></label>
+          <label>Assignee<select name="assignee_id"><option value="__keep__">Leave as it is</option><option value="">Unassigned</option>${STATE.users.map((u) => `<option value="${u.id}">${esc(u.display_name)}</option>`).join('')}</select></label></div>
+        <div class="two"><label>Severity<select name="severity"><option value="">Leave as it is</option>${['Critical', 'Major', 'Minor', 'Trivial'].map((o) => `<option>${o}</option>`).join('')}</select></label>
+          <label>Priority<select name="priority"><option value="">Leave as it is</option>${['High', 'Medium', 'Low'].map((o) => `<option>${o}</option>`).join('')}</select></label></div>
+        <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Apply</button></footer>`,
+        async (fd) => {
+          const as = fd.get('assignee_id');
+          const r = await api('POST', `/api/projects/${STATE.pid}/bugs/bulk`, { ids: [...sel], status: fd.get('status'), severity: fd.get('severity'), priority: fd.get('priority'), assignee_id: as === '__keep__' ? '__keep__' : as === '' ? null : Number(as) });
+          toast(`Updated ${r.count} bug${r.count === 1 ? '' : 's'}`);
+          router();
+        });
+      return;
+    }
     if (!e.target.closest('[data-act=new]')) return;
     openDialog(`<h2>New bug</h2><label>Title<input name="title" required maxlength="300" autofocus></label>
       <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Create</button></footer>`,

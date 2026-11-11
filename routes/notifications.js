@@ -188,10 +188,29 @@ function install(ctx) {
     setSetting('digest_last_at', new Date().toISOString());
   }
 
+  // Once a day (after the digest hour): tell people who still have test runs in a cycle that is due soon or overdue.
+  const DUE_MS = process.env.NOTIFY_DUE_MS !== undefined ? Number(process.env.NOTIFY_DUE_MS) : 23 * 3600000;
+  function dueIfDue() {
+    const d = new Date();
+    const last = Date.parse(getSetting('due_last_at') || '') || 0;
+    if (Date.now() - last < DUE_MS || d.getHours() < Number(getSetting('digest_hour') || 8)) return;
+    const day = d.toISOString().slice(0, 10), tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const rows = q(`SELECT e.assignee_id AS uid, c.id AS cycle_id, c.key, c.name, c.due_date, c.project_id, COUNT(*) AS n
+      FROM executions e JOIN cycles c ON c.id=e.cycle_id
+      WHERE c.adhoc=0 AND c.due_date!='' AND c.due_date<=? AND e.assignee_id IS NOT NULL AND e.status IN ('Not Executed','In Progress') GROUP BY e.assignee_id, c.id`).all(tomorrow);
+    for (const r of rows) {
+      const link = `#/cycles/${r.cycle_id}`;
+      if (q("SELECT 1 FROM notifications WHERE user_id=? AND kind='due' AND link=? AND substr(created_at,1,10)=?").get(r.uid, link, day)) continue;
+      const when = r.due_date < day ? `is overdue (was due ${r.due_date})` : r.due_date === day ? 'is due today' : 'is due tomorrow';
+      notifier.notify(r.uid, { kind: 'due', title: `${r.key} ${r.name} ${when}`, body: `${r.n} of your test run${r.n === 1 ? ' is' : 's are'} still to do.`, link, projectId: r.project_id });
+    }
+    setSetting('due_last_at', new Date().toISOString());
+  }
+
   async function tick() {
     if (busy) return;
     busy = true;
-    try { digestIfDue(); await sendOutbox(); } catch (e) { console.error('notification worker:', e.message); } finally { busy = false; }
+    try { digestIfDue(); dueIfDue(); await sendOutbox(); } catch (e) { console.error('notification worker:', e.message); } finally { busy = false; }
   }
   ctx.resetAvailable = resetAvailable;
   notifier.hooks.kick = () => setImmediate(tick);
