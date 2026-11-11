@@ -84,6 +84,10 @@ function install(ctx) {
     const ageDays = (iso) => Math.max(0, (Date.now() - Date.parse(iso)) / 86400000);
     const actFrom = f.from || null;
 
+    const slowest = q(`SELECT e.case_id, c.key, c.title, COUNT(*) AS runs, CAST(AVG(e.duration_ms) AS INTEGER) AS avg_ms, MAX(e.duration_ms) AS max_ms
+      FROM executions e JOIN cases c ON c.id=e.case_id JOIN cycles cy ON cy.id=e.cycle_id
+      WHERE c.project_id=? AND e.duration_ms > 0 ${f.planId ? 'AND cy.plan_id=?' : ''} ${window(f, 'e.executed_at')} ${inCases(f, 'e.case_id')}
+      GROUP BY e.case_id ORDER BY avg_ms DESC, c.id LIMIT 10`).all(pid, ...(f.planId ? [f.planId] : []), ...windowArgs(f), ...caseArgs(f));
     return {
       filters: { from: f.from, to: f.to, folder: f.folder, label: f.label, plan_id: f.planId || null, active: f.active },
       trend: trendOf(pid, clampCycles(query.get('cycles')), f),
@@ -95,6 +99,7 @@ function install(ctx) {
         avgOpenAgeDays: open.length ? Math.round((open.reduce((n, b) => n + ageDays(b.created_at), 0) / open.length) * 10) / 10 : 0,
         byCase: [...byCase.values()].sort((a, b) => b.count - a.count || a.case_key.localeCompare(b.case_key)).slice(0, 10),
       },
+      slowest,
       failing: history.filter((h) => h.fails > 0).sort((a, b) => b.fails - a.fails || b.fails / b.runs - a.fails / a.runs).slice(0, 10),
       flaky: history.filter((h) => h.flips >= 2).sort((a, b) => b.flips - a.flips || b.runs - a.runs).slice(0, 10),
       // With no dates given, tester activity looks at the last 30 days; with dates it follows the window.

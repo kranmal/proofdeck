@@ -52,11 +52,12 @@ function install(ctx) {
     if (kind === 'github') {
       return { sync: syncCfg, base: validateBase(c.base || 'https://api.github.com', 'GitHub API URL'), owner: name(c.owner, 'Owner'), repo: name(c.repo, 'Repository'), labels: labels.length ? labels : ['bug'] };
     }
+    const variant = c.variant === 'server' ? 'server' : 'cloud';
     const email = str(c.email).trim();
-    if (!/^[^\s@]+@[^\s@]+$/.test(email)) throw new IntegrationError('Enter the email address of the Jira account that owns the API token');
+    if (variant === 'cloud' && !/^[^\s@]+@[^\s@]+$/.test(email)) throw new IntegrationError('Enter the email address of the Jira account that owns the API token');
     const projectKey = str(c.projectKey).trim().toUpperCase();
     if (!/^[A-Z][A-Z0-9_]{1,19}$/.test(projectKey)) throw new IntegrationError('Jira project key looks wrong, e.g. PROJ');
-    return { sync: syncCfg, base: validateBase(c.base, 'Jira site URL'), email, projectKey, issueType: str(c.issueType, 'Bug').trim().slice(0, 60) || 'Bug', labels };
+    return { sync: syncCfg, variant, base: validateBase(c.base, 'Jira site URL'), email: variant === 'cloud' ? email : '', projectKey, issueType: str(c.issueType, 'Bug').trim().slice(0, 60) || 'Bug', labels };
   }
 
   const getRow = (pid, kind) => q('SELECT * FROM integrations WHERE project_id=? AND kind=?').get(pid, kind);

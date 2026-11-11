@@ -209,6 +209,7 @@ addColumn('cases', 'params', "TEXT NOT NULL DEFAULT ''");
 addColumn('executions', 'executed_by_label', "TEXT NOT NULL DEFAULT ''"); // who ran it when it was not a signed-in user (an API token)
 addColumn('executions', 'iteration', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('executions', 'iteration_label', "TEXT NOT NULL DEFAULT ''");
+addColumn('executions', 'duration_ms', 'INTEGER'); // how long the automated test took, as reported by CI
 addColumn('executions', 'run_id', "TEXT NOT NULL DEFAULT ''");
 addColumn('step_results', 'origin', "TEXT NOT NULL DEFAULT ''");
 // Automation key: how a CI test or script is matched to its test case. Unique per project when set.
@@ -569,6 +570,8 @@ function applyImportUpdate(existing, c, mapped, userId) {
   if (mapped.includes('folder')) set('folder', normFolder(c.folder));
   if (sets.length) q(`UPDATE cases SET ${sets.join(', ')}, updated_at=?, updated_by=? WHERE id=?`).run(...vals, now(), userId, existing.id);
   if (c.steps.length) replaceSteps(existing.id, c.steps);
+  if (mapped.includes('params') && c.params !== undefined) q('UPDATE cases SET params=? WHERE id=?').run(cleanParams(c.params), existing.id);
+  if (mapped.includes('bdd_script') && c.bdd_script) saveScript(existing.id, { script_type: 'bdd', bdd_script: c.bdd_script });
   if (mapped.includes('links')) links.replaceLinks(existing.id, c.links);
   let keyConflict = false;
   if (mapped.includes('automation_key') && c.automation_key) {
@@ -601,7 +604,15 @@ route('POST', '/api/projects/:pid/import', ({ params, body, user }) => {
     }
     return { c };
   });
+  // Data sets and Gherkin scripts are checked now, so a preview (and not a half-way import) reports the problem.
+  for (const c of cases) {
+    try {
+      if (c.params) cleanParams(c.params);
+      if (c.bdd_script) { const g = gherkin.parseGherkin(c.bdd_script); if (g.errors.length) throw new HttpError(400, `The Gherkin script has a problem: ${g.errors[0]}`); }
+    } catch (e) { if (e instanceof HttpError) throw new HttpError(400, `“${c.title.slice(0, 60)}”: ${e.message}`); throw e; }
+  }
   const summary = {
+    calls: cases.reduce((n, c) => n + c.steps.filter((s) => s.call).length, 0), withBdd: cases.filter((c) => c.bdd_script).length, withDataSets: cases.filter((c) => c.params).length,
     cases: cases.length, steps: cases.reduce((n, c) => n + c.steps.length, 0), skipped,
     withoutSteps: cases.filter((c) => !c.steps.length).length,
     created: plan.filter((x) => !x.target && !x.ambiguous).length, updated: plan.filter((x) => x.target).length, ambiguous: plan.filter((x) => x.ambiguous).length,
@@ -613,15 +624,49 @@ route('POST', '/api/projects/:pid/import', ({ params, body, user }) => {
   if (cases.length > 2000) throw new HttpError(400, 'More than 2000 test cases in one file. Split the file and import in parts.');
   return tx(() => {
     const createdKeys = [], updatedKeys = [];
-    let keyConflicts = 0;
-    for (const x of plan) {
+    let keyConflicts = 0, callsLinked = 0, callsUnresolved = 0;
+    // "Call test case KEY" steps need the called case to exist first: handle called cases before their callers.
+    const fileIdx = new Map();
+    plan.forEach((x, i) => { const k = x.c.key.toLowerCase(); if (k && !fileIdx.has(k)) fileIdx.set(k, i); });
+    const order = [], seen = new Set();
+    const visit = (i) => {
+      if (seen.has(i)) return;
+      seen.add(i);
+      for (const s of plan[i].c.steps) if (s.call) { const j = fileIdx.get(s.call.toLowerCase()); if (j !== undefined && j !== i) visit(j); }
+      order.push(i);
+    };
+    plan.forEach((_, i) => visit(i));
+    const resolved = new Map(); // key in the file -> the case it became
+    const resolveSteps = (c, link) => c.steps.map((s) => {
+      if (!s.call) return s;
+      const id = link ? (resolved.get(s.call.toLowerCase()) || (byKey.get(s.call.toLowerCase()) || {}).id) : null;
+      return id ? { call_case_id: id } : { action: `Call test case ${s.call}`, test_data: '', expected: '' };
+    });
+    const count = (c, steps) => { for (const [i, s] of c.steps.entries()) if (s.call) { if (steps[i].call_case_id) callsLinked++; else callsUnresolved++; } };
+    for (const i of order) {
+      const x = plan[i];
       if (x.ambiguous) continue;
-      if (x.target) { if (applyImportUpdate(x.target, x.c, mapped, user.id)) keyConflicts++; updatedKeys.push(x.target.key); continue; }
-      const c = { ...x.c };
+      let steps = resolveSteps(x.c, true);
+      if (x.target) {
+        try { if (applyImportUpdate(x.target, { ...x.c, steps }, mapped, user.id)) keyConflicts++; }
+        catch (e) { // a call that would loop back on itself: keep those steps as text instead
+          if (!(e instanceof HttpError) || !steps.some((s) => s.call_case_id)) throw e;
+          steps = resolveSteps(x.c, false);
+          if (applyImportUpdate(x.target, { ...x.c, steps }, mapped, user.id)) keyConflicts++;
+        }
+        count(x.c, steps);
+        updatedKeys.push(x.target.key);
+        if (x.c.key) resolved.set(x.c.key.toLowerCase(), x.target.id);
+        continue;
+      }
+      const c = { ...x.c, steps };
       if (c.automation_key && autoKeyTaken(params.pid, c.automation_key, 0)) { keyConflicts++; c.automation_key = ''; }
-      createdKeys.push(insertCase(params.pid, c, user.id).key);
+      count(x.c, steps);
+      const made = insertCase(params.pid, c, user.id);
+      createdKeys.push(made.key);
+      if (x.c.key) resolved.set(x.c.key.toLowerCase(), made.id);
     }
-    return { ...summary, firstKey: createdKeys[0] || null, lastKey: createdKeys.at(-1) || null, updatedKeys: updatedKeys.slice(0, 50), keyConflicts };
+    return { ...summary, firstKey: createdKeys[0] || null, lastKey: createdKeys.at(-1) || null, updatedKeys: updatedKeys.slice(0, 50), keyConflicts, callsLinked, callsUnresolved };
   });
 });
 
@@ -640,8 +685,14 @@ route('GET', '/api/cases/:id', ({ params }) => {
   c.approved_by_name = c.approved_by ? (q('SELECT display_name FROM users WHERE id=?').get(c.approved_by) || {}).display_name || '' : '';
   c.usedBy = q('SELECT DISTINCT c2.id, c2.key, c2.title FROM steps s JOIN cases c2 ON c2.id=s.case_id WHERE s.call_case_id=? ORDER BY c2.id').all(c.id);
   c.bugs = q('SELECT id, key, title, status, severity FROM bugs WHERE case_id=? ORDER BY id DESC').all(c.id);
-  c.runs = q(`SELECT e.id, e.status, e.executed_at, cy.key AS cycle_key, cy.name AS cycle_name, cy.adhoc
+  c.runs = q(`SELECT e.id, e.status, e.executed_at, e.duration_ms, cy.key AS cycle_key, cy.name AS cycle_name, cy.adhoc
     FROM executions e JOIN cycles cy ON cy.id=e.cycle_id WHERE e.case_id=? ORDER BY e.id DESC LIMIT 20`).all(c.id);
+  { // reliability over the last 200 decided runs, oldest first so a "switch" is pass->fail or fail->pass
+    const h = q("SELECT status, duration_ms FROM executions WHERE case_id=? AND status IN ('Pass','Fail') AND executed_at IS NOT NULL ORDER BY executed_at DESC, id DESC LIMIT 200").all(c.id).reverse();
+    const timed = h.filter((x) => x.duration_ms > 0);
+    c.runStats = { runs: h.length, fails: h.filter((x) => x.status === 'Fail').length, switches: h.filter((x, i) => i && x.status !== h[i - 1].status).length,
+      avg_ms: timed.length ? Math.round(timed.reduce((n, x) => n + x.duration_ms, 0) / timed.length) : null };
+  }
   return c;
 });
 
@@ -897,7 +948,7 @@ route('GET', '/api/cycles/:id', ({ params }) => {
   { const n = q('SELECT COALESCE(SUM(status IN (\'Not Executed\',\'In Progress\')),0) AS left FROM executions WHERE cycle_id=?').get(c.id); c.overdue = !!c.due_date && !c.adhoc && c.due_date < today() && n.left > 0; }
   c.plan_key = plan ? plan.key : ''; 
   c.plan_name = plan ? plan.name : '';
-  c.executions = q(`SELECT e.id, e.case_id, e.case_key, e.case_title, e.status, e.executed_at, e.assignee_id, e.iteration, e.iteration_label,
+  c.executions = q(`SELECT e.id, e.case_id, e.case_key, e.case_title, e.status, e.executed_at, e.assignee_id, e.iteration, e.iteration_label, e.duration_ms,
       (SELECT display_name FROM users WHERE id=e.assignee_id) AS assignee_name,
       COALESCE((SELECT display_name FROM users WHERE id=e.executed_by), NULLIF(e.executed_by_label, '')) AS executed_by_name,
       (SELECT COUNT(*) FROM step_results s WHERE s.execution_id=e.id) AS step_count,

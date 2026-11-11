@@ -126,6 +126,8 @@ function install(ctx) {
       }
       if (status && status !== 'Skipped') q('UPDATE executions SET status=?, executed_at=? WHERE id=?').run(status, now(), e.id); // an explicit status wins
       q("UPDATE executions SET executed_by=NULL, executed_by_label=?, comment=CASE WHEN ?!='' THEN ? ELSE comment END WHERE id=?").run(label, comment, comment, e.id);
+      const ms = Number(r.duration_ms);
+      if (Number.isFinite(ms) && ms >= 0) q('UPDATE executions SET duration_ms=? WHERE id=?').run(Math.min(Math.round(ms), 7 * 86400000), e.id);
     }
     const finals = execs.map((e) => q('SELECT id, status FROM executions WHERE id=?').get(e.id));
     out.execution_ids = finals.map((f) => f.id);

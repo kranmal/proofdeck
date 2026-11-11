@@ -10,6 +10,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const cls = (s) => String(s || '').toLowerCase().replace(/\s+/g, '-');
 const pill = (s) => `<span class="pill ${cls(s)}">${esc(s)}</span>`;
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—');
+const fmtMs = (ms) => (!(ms > 0) ? '' : ms < 1000 ? `${ms} ms` : ms < 60000 ? `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s` : `${Math.floor(ms / 60000)} min ${Math.round((ms % 60000) / 1000)} s`);
 const firstLine = (s) => String(s || '').split('\n')[0].trim();
 const options = (list, cur) => list.map((o) => `<option${o === cur ? ' selected' : ''}>${esc(o)}</option>`).join('');
 
@@ -272,6 +273,9 @@ async function viewReports() {
         <section class="card"><h2>Flaky test cases</h2><p class="muted">Results that keep switching between pass and fail.</p>
           ${r.flaky.length ? `<div class="tscroll"><table><thead><tr><th>Test case</th><th class="num">Runs</th><th class="num">Switches</th><th>Last</th></tr></thead><tbody>${r.flaky.map((f) => `<tr><td>${caseLink(f.case_id, f.key)} ${esc(f.title)}</td><td class="num">${f.runs}</td><td class="num">${f.flips}</td><td>${pill(f.last)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">None. Results have been stable.</p>'}
         </section>
+        <section class="card"><h2>Slowest automated tests</h2><p class="muted">Average time reported by CI.</p>
+          ${(r.slowest || []).length ? `<div class="tscroll"><table><thead><tr><th>Test case</th><th class="num">Runs</th><th class="num">Average</th><th class="num">Slowest</th></tr></thead><tbody>${r.slowest.map((x) => `<tr><td>${caseLink(x.case_id, x.key)} ${esc(x.title)}</td><td class="num">${x.runs}</td><td class="num">${fmtMs(x.avg_ms)}</td><td class="num">${fmtMs(x.max_ms)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No timings yet. Send <code>duration_ms</code> with CI results (JUnit reports include it).</p>'}
+        </section>
       </div>
       <section class="card"><div class="chart-head"><h2>Requirement coverage</h2><button type="button" class="btn ghost small" data-act="export-trace">${withIcon('download', 'Export')}</button></div>
         ${trace.requirements.length || trace.uncovered.length ? `<p class="muted"><b>${trace.summary.requirements}</b> requirement${trace.summary.requirements === 1 ? '' : 's'}: ${trace.summary.passing} passing, ${trace.summary.failing} failing, ${trace.summary.blocked} blocked, ${trace.summary.partly} partly run, ${trace.summary.notRun} not run · <b>${trace.summary.uncovered}</b> test case${trace.summary.uncovered === 1 ? '' : 's'} not linked to any requirement</p>
@@ -477,10 +481,14 @@ async function viewIntegrations() {
       <div class="form">${field('github', 'owner', 'Owner', { ph: 'acme' })}${field('github', 'repo', 'Repository', { ph: 'shop' })}
         ${field('github', 'labels', 'Labels', { hint: 'Comma separated. A severity label is added.', def: 'bug' })}${field('github', 'token', 'Token', { type: 'password', ph: 'github_pat_…' })}
         <div class="wide">${field('github', 'base', 'API URL', { hint: 'Only change this for GitHub Enterprise, e.g. https://ghe.example.com/api/v3', def: 'https://api.github.com' })}</div></div>${syncBlock('github')}${actions('github')}</section>
-    <section class="card" data-card="jira">${head('jira', 'Jira Cloud', 'Create an issue with its screenshots attached. Create an API token at id.atlassian.com under Security. The account needs permission to create issues and add attachments.')}
-      <div class="form">${field('jira', 'base', 'Site URL', { ph: 'https://your-team.atlassian.net' })}${field('jira', 'email', 'Account email', { ph: 'you@company.com' })}
+    <section class="card" data-card="jira">${head('jira', 'Jira', 'Create an issue with its screenshots attached. On Jira Cloud use an API token from id.atlassian.com (Security). On Jira Server or Data Center use a personal access token from your profile. The account needs permission to create issues and add attachments.')}
+      <div class="form"><label>Edition<select data-f="variant" id="jvariant"><option value="cloud"${val('jira', 'variant', 'cloud') !== 'server' ? ' selected' : ''}>Jira Cloud (atlassian.net)</option><option value="server"${val('jira', 'variant', 'cloud') === 'server' ? ' selected' : ''}>Jira Server / Data Center (self-hosted)</option></select></label>
+        ${field('jira', 'base', 'Site URL', { hint: 'Must be https. Self-hosted example: https://jira.example.com (or with a context path like /jira).', ph: 'https://your-team.atlassian.net' })}<span id="jemail">${field('jira', 'email', 'Account email', { hint: 'Jira Cloud only.', ph: 'you@company.com' })}</span>
         ${field('jira', 'projectKey', 'Project key', { ph: 'PROJ' })}${field('jira', 'issueType', 'Issue type', { def: 'Bug' })}
-        ${field('jira', 'labels', 'Extra labels', { hint: 'Comma separated. “proofdeck” and a severity label are always added.' })}${field('jira', 'token', 'API token', { type: 'password', ph: 'ATATT…' })}</div>${syncBlock('jira')}${actions('jira')}</section>`;
+        ${field('jira', 'labels', 'Extra labels', { hint: 'Comma separated. “proofdeck” and a severity label are always added.' })}${field('jira', 'token', 'API token / personal access token', { type: 'password', ph: 'ATATT… or the token from your profile' })}</div>${syncBlock('jira')}${actions('jira')}</section>`;
+  const showEmail = () => { const j = $('#jvariant', view); if (j) $('#jemail', view).hidden = j.value === 'server'; };
+  showEmail();
+  view.onchange = (e) => { if (e.target.id === 'jvariant') showEmail(); };
   const read = (kind) => {
     const card = $(`[data-card=${kind}]`, view);
     const v = Object.fromEntries($$('[data-f]', card).map((i) => [i.dataset.f, i.value]));
@@ -1144,6 +1152,7 @@ const IMPORT_FIELDS = [
   ['title', 'Title (required)'], ['action', 'Step: action'], ['test_data', 'Step: test data'], ['expected', 'Step: expected result'],
   ['precondition', 'Preconditions'], ['objective', 'Objective'], ['folder', 'Folder'], ['priority', 'Priority'], ['status', 'Status'],
   ['labels', 'Labels'], ['links', 'Requirements (issue keys)'], ['automation_key', 'Automation key'],
+  ['bdd_script', 'Gherkin (BDD) script'], ['params', 'Data sets (JSON)'],
   ['key', 'Source ID (tells cases apart; matches existing cases when updating)'],
 ];
 
@@ -1159,7 +1168,7 @@ function openImport(onDone) {
     async () => {
       const r = await api('POST', `/api/projects/${STATE.pid}/import`, { rows: parsed.rows, mapping, mode, stripHtml: strip });
       toast([r.created ? `Created ${r.created} test case${r.created === 1 ? '' : 's'}${r.firstKey ? ` (${esc(r.firstKey)}${r.created > 1 ? ' – ' + esc(r.lastKey) : ''})` : ''}` : '', r.updated ? `updated ${r.updated}` : '',
-        r.ambiguous ? `${r.ambiguous} skipped (several matches)` : '', r.keyConflicts ? `${r.keyConflicts} automation key${r.keyConflicts === 1 ? '' : 's'} already in use` : ''].filter(Boolean).join(', '));
+        r.ambiguous ? `${r.ambiguous} skipped (several matches)` : '', r.callsLinked ? `${r.callsLinked} reused-step link${r.callsLinked === 1 ? '' : 's'} restored` : '', r.callsUnresolved ? `${r.callsUnresolved} “Call test case” step${r.callsUnresolved === 1 ? '' : 's'} kept as text (case not found, or it would loop)` : '', r.keyConflicts ? `${r.keyConflicts} automation key${r.keyConflicts === 1 ? '' : 's'} already in use` : ''].filter(Boolean).join(', '));
       onDone();
     },
     (form) => {
@@ -1175,7 +1184,8 @@ function openImport(onDone) {
           out.innerHTML = `<p>${mode === 'create' ? `<b>${p.cases}</b> test case${p.cases === 1 ? '' : 's'} with <b>${p.steps}</b> step${p.steps === 1 ? '' : 's'} will be created.`
             : `<b>${p.created}</b> will be created and <b>${p.updated}</b> updated${p.ambiguous ? `; <b>${p.ambiguous}</b> skipped because several test cases match` : ''} (the file has <b>${p.steps}</b> step${p.steps === 1 ? '' : 's'}).`}
             ${p.withoutSteps ? `${p.withoutSteps} ha${p.withoutSteps === 1 ? 's' : 've'} no steps.` : ''}
-            ${p.skipped ? `${p.skipped} row${p.skipped === 1 ? '' : 's'} skipped (no title on or above them).` : ''}</p>
+            ${p.skipped ? `${p.skipped} row${p.skipped === 1 ? '' : 's'} skipped (no title on or above them).` : ''}
+            ${[p.withBdd && `${p.withBdd} Gherkin script${p.withBdd === 1 ? '' : 's'}`, p.withDataSets && `${p.withDataSets} with data sets`, p.calls && `${p.calls} “Call test case” step${p.calls === 1 ? '' : 's'}`].filter(Boolean).join(', ')}</p>
             ${p.preview.length ? `<table class="mini"><thead><tr><th>First test cases</th><th>Folder</th><th>Priority</th><th class="num">Steps</th><th>Result</th></tr></thead><tbody>
               ${p.preview.map((c) => `<tr><td>${esc(c.title)}</td><td>${esc(c.folder)}</td><td>${pill(c.priority)}</td><td class="num">${c.steps}</td><td>${c.action === 'update' ? `Update ${esc(c.target)}` : c.action === 'ambiguous' ? 'Skipped' : 'New'}</td></tr>`).join('')}</tbody></table>` : ''}`;
           go.disabled = !(p.created + p.updated);
@@ -1566,9 +1576,9 @@ async function viewCaseEdit(id) {
     ${c.usedBy.length ? `<section class="card"><h2>Used by</h2><p class="muted">These test cases call this one, so changes here apply to their future runs.</p><p>${c.usedBy.map((u) => `<a class="chip ext" href="#/cases/${u.id}"><span>${esc(u.key)} ${esc(u.title)}</span></a>`).join(' ')}</p></section>` : ''}
     ${c.bugs.length ? `<section class="card"><h2>Bugs found by this test</h2><table><tbody>${c.bugs.map((b) => `<tr>
       <td><a href="#/bugs/${b.id}"><span class="key">${esc(b.key)}</span> ${esc(b.title)}</a></td><td>${pill(b.severity)}</td><td>${pill(b.status)}</td></tr>`).join('')}</tbody></table></section>` : ''}
-    ${c.runs.length ? `<section class="card"><h2>Run history</h2><table><tbody>${c.runs.map((r) => `<tr>
+    ${c.runs.length ? `<section class="card"><h2>Run history</h2>${c.runStats && c.runStats.runs ? `<p class="muted">${c.runStats.runs} decided run${c.runStats.runs === 1 ? '' : 's'}: ${c.runStats.fails} failed${c.runStats.switches >= 2 ? `, switched between pass and fail ${c.runStats.switches} times (possibly flaky)` : ''}${c.runStats.avg_ms ? `. Average time ${fmtMs(c.runStats.avg_ms)}` : ''}.</p>` : ''}<table><tbody>${c.runs.map((r) => `<tr>
       <td><a href="#/run/${r.id}">${r.adhoc ? 'Standalone run' : `<span class="key">${esc(r.cycle_key)}</span> ${esc(r.cycle_name)}`}</a></td>
-      <td>${pill(r.status)}</td><td class="muted">${fmtDate(r.executed_at)}</td></tr>`).join('')}</tbody></table></section>` : ''}
+      <td>${pill(r.status)}</td><td class="muted">${fmtDate(r.executed_at)}</td><td class="num muted">${fmtMs(r.duration_ms)}</td></tr>`).join('')}</tbody></table></section>` : ''}
     ${isNew ? '' : `<section class="card"><h2>Version history</h2>
       <div class="tscroll"><table><thead><tr><th>Version</th><th>Saved</th><th>By</th><th>Note</th><th></th></tr></thead><tbody>
       ${history.map((h, i) => `<tr><td><b>v${h.version}</b>${i === 0 ? ' <span class="pill active">Current</span>' : ''}</td><td>${fmtDate(h.created_at)}</td><td>${esc(h.author || '—')}</td><td class="muted">${esc(h.note)}</td>
@@ -1840,9 +1850,9 @@ async function viewCycle(id) {
       ${next ? `<a class="btn primary" href="#/run/${next.id}">${icon('play')}<span>${counts.pass + counts.fail + counts.blocked + counts.in_progress ? 'Continue' : 'Start'} testing</span></a>` : ''}</span></header>
     <p class="meta">${[c.adhoc && c.description, c.environment, c.build && `Build ${c.build}`, `Created ${fmtDate(c.created_at)}`].filter(Boolean).map(esc).join(' · ')}${c.plan_id ? ` · Plan <a href="#/plans/${c.plan_id}">${esc(c.plan_key)} ${esc(c.plan_name)}</a>` : ''}${c.due_date ? ` · Due ${esc(c.due_date)}` : ''}${c.overdue ? ' · <span class="pill fail">Overdue</span>' : ''}${c.created_by_name ? ` · by ${esc(c.created_by_name)}` : ''}</p>
     <section class="card">${bar(counts)}<p class="legend">${counts.pass} passed · ${counts.fail} failed · ${counts.blocked} blocked · ${counts.total - counts.pass - counts.fail - counts.blocked} remaining</p></section>
-    <section class="card flush">${c.executions.length ? `<table><thead><tr><th>Test case</th><th>Status</th><th class="num">Steps done</th><th class="num">Bugs</th><th>Assignee</th><th>Last run</th><th></th></tr></thead><tbody>
+    <section class="card flush">${c.executions.length ? `<table><thead><tr><th>Test case</th><th>Status</th><th class="num">Steps done</th><th class="num">Bugs</th>${c.executions.some((e) => e.duration_ms > 0) ? '<th class="num">Took</th>' : ''}<th>Assignee</th><th>Last run</th><th></th></tr></thead><tbody>
       ${c.executions.map((e) => `<tr><td><a href="#/run/${e.id}"><span class="key">${esc(e.case_key)}</span> ${esc(e.case_title)}</a>${e.iteration ? ` <span class="muted">· data set ${e.iteration}: ${esc(e.iteration_label)}</span>` : ''}</td><td>${pill(e.status)}</td>
-        <td class="num">${e.steps_done}/${e.step_count}</td><td class="num">${e.bug_count || ''}</td><td>${userSelect(`data-assign="${e.id}" aria-label="Assignee for ${esc(e.case_key)}"`, e.assignee_id, e.assignee_name)}</td>
+        <td class="num">${e.steps_done}/${e.step_count}</td><td class="num">${e.bug_count || ''}</td>${c.executions.some((x) => x.duration_ms > 0) ? `<td class="num muted">${fmtMs(e.duration_ms)}</td>` : ''}<td>${userSelect(`data-assign="${e.id}" aria-label="Assignee for ${esc(e.case_key)}"`, e.assignee_id, e.assignee_name)}</td>
         <td class="muted">${e.executed_by_name ? esc(e.executed_by_name) + ' · ' : ''}${fmtDate(e.executed_at)}</td>
         <td class="num"><a class="btn small ghost" href="#/run/${e.id}">${icon('play')}<span>${e.status === 'Not Executed' ? 'Run' : 'Open'}</span></a></td></tr>`).join('')}
       </tbody></table>` : `<p class="empty">${c.adhoc ? 'No standalone runs yet. Press “Run” on a test case.' : 'This cycle has no test cases yet.'}</p>`}</section>`;
