@@ -476,6 +476,76 @@ async function viewIntegrations() {
   };
 }
 
+// ---------- API tokens (CI) ----------
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
+}
+
+async function viewApiTokens() {
+  const list = await api('GET', `/api/projects/${STATE.pid}/api-tokens`);
+  const proj = STATE.projects.find((p) => p.id === STATE.pid);
+  const o = location.origin;
+  const snippets = [
+    ['JUnit XML (Jest, pytest, Playwright, Maven, Go…)', `curl -sS -X POST "${o}/api/ci/junit?cycle=Nightly&build=$BUILD_ID&environment=CI&autoCreate=1&createBugs=1" \\
+  -H "Authorization: Bearer $PROOFDECK_TOKEN" -H "Content-Type: application/xml" \\
+  --data-binary @junit.xml`],
+    ['JSON results', `curl -sS -X POST ${o}/api/ci/results \\
+  -H "Authorization: Bearer $PROOFDECK_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"cycle":{"name":"Nightly","build":"1.4.2"},"results":[
+        {"case":"${proj ? proj.key : 'PROJ'}-T1","status":"Pass"},
+        {"automation_key":"login.spec.ts::rejects a wrong password","status":"Fail","message":"Expected 401"}]}'`],
+    ['Gate a pipeline on the result', `curl -sS "${o}/api/ci/cycle?name=Nightly&build=$BUILD_ID" \\
+  -H "Authorization: Bearer $PROOFDECK_TOKEN" | jq -e '.ok'   # exits non-zero unless every test passed`],
+    ['GitHub Actions step', `- name: Send results to Proofdeck
+  if: always()
+  env: { PROOFDECK_TOKEN: \${{ secrets.PROOFDECK_TOKEN }} }
+  run: |
+    curl -sS --fail-with-body -X POST "${o}/api/ci/junit?cycle=CI&build=\${{ github.run_number }}&autoCreate=1" \\
+      -H "Authorization: Bearer $PROOFDECK_TOKEN" -H "Content-Type: application/xml" --data-binary @junit.xml`],
+  ];
+  view.innerHTML = `
+    <header class="head"><h1>API tokens</h1><button class="btn primary" data-act="new">${withIcon('plus', 'Create token')}</button></header>
+    <p class="meta">Tokens let your CI system record test results in <b>${esc(proj ? proj.name : '')}</b>. A token works only for the CI endpoints below, never for the rest of Proofdeck. It is shown once when you create it; only a fingerprint is kept.</p>
+    <section class="card flush">${list.length ? `<table><thead><tr><th>Name</th><th>Token</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map((t) => `<tr${t.revoked_at ? ' class="revoked"' : ''}><td>${esc(t.name)}</td><td><code>${esc(t.prefix)}…</code></td><td class="muted">${fmtDate(t.created_at)}${t.created_by_name ? ` by ${esc(t.created_by_name)}` : ''}</td>
+        <td class="muted">${t.last_used_at ? fmtDate(t.last_used_at) : 'Never'}</td><td>${t.revoked_at ? pill('Revoked') : pill('Active')}</td>
+        <td class="num">${t.revoked_at ? '' : `<button type="button" class="btn small danger" data-act="revoke" data-id="${t.id}" data-name="${esc(t.name)}">${withIcon('x', 'Revoke')}</button>`}</td></tr>`).join('')}</tbody></table>`
+      : '<p class="empty">No tokens yet. Create one for each pipeline, so you can revoke them separately.</p>'}</section>
+    <section class="card"><h2>Send results from CI</h2>
+      <p class="muted">Put the token in a secret called <code>PROOFDECK_TOKEN</code>. A cycle is found or created from its name and build, so re-sending (retries, parallel shards) adds to the same cycle.
+        Cases are matched by their key (<code>${esc(proj ? proj.key : 'PROJ')}-T1</code>) or by an <b>automation key</b> set on the test case; <code>autoCreate=1</code> creates draft cases for tests Proofdeck has not seen. With <code>createBugs=1</code> a failure opens one bug per case and later failures add a comment to it.</p>
+      ${snippets.map(([title, code], i) => `<h3>${esc(title)}</h3><div class="codewrap"><pre class="code" id="snip${i}">${esc(code)}</pre><button type="button" class="btn small ghost" data-copy="snip${i}">${withIcon('copy', 'Copy')}</button></div>`).join('')}
+    </section>`;
+  view.onclick = async (e) => {
+    const cp = e.target.closest('[data-copy]');
+    if (cp) { toast((await copyText($(`#${cp.dataset.copy}`).textContent)) ? 'Copied' : 'Select the text and copy it', false); return; }
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    try {
+      if (b.dataset.act === 'revoke') {
+        if (!confirm(`Revoke “${b.dataset.name}”?\n\nPipelines using it stop working immediately. Results already recorded are kept.`)) return;
+        await api('DELETE', `/api/api-tokens/${b.dataset.id}`);
+        router();
+      } else if (b.dataset.act === 'new') {
+        openDialog(`<h2>Create API token</h2>
+          <label>Name<small>What will use it, for example “GitHub Actions”.</small><input name="name" required maxlength="60" autofocus autocomplete="off"></label>
+          <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Create token</button></footer>`,
+          async (fd) => {
+            const t = await api('POST', `/api/projects/${STATE.pid}/api-tokens`, { name: fd.get('name') });
+            setTimeout(() => {
+              openDialog(`<h2>Copy your token now</h2>
+                <p class="warn">This is the only time it is shown. Store it in your CI system’s secrets.</p>
+                <div class="tokenbox"><input id="tok" readonly value="${esc(t.token)}" aria-label="API token" spellcheck="false"><button type="button" class="btn ghost" data-copytok>${withIcon('copy', 'Copy')}</button></div>
+                <footer><button type="submit" class="btn primary">Done</button></footer>`,
+                async () => { router(); },
+                (f) => { $('#tok', f).select(); f.addEventListener('click', async (ev) => { if (ev.target.closest('[data-copytok]')) toast((await copyText(t.token)) ? 'Copied' : 'Press Ctrl+C to copy', false); }); });
+            }, 0);
+          });
+      }
+    } catch (err) { fail(err); }
+  };
+}
+
 // ---------- accounts ----------
 const userSelect = (attrs, id, name) => `<select ${attrs}><option value="">Unassigned</option>
   ${id && !STATE.users.some((u) => u.id === id) ? `<option value="${id}" selected>${esc(name || 'Former user')}</option>` : ''}
@@ -632,6 +702,7 @@ const ROUTES = [
   [/^#\/reports$/, 'reports', viewReports],
   [/^#\/users$/, 'users', viewUsers],
   [/^#\/integrations$/, 'integrations', viewIntegrations],
+  [/^#\/api-tokens$/, 'api-tokens', viewApiTokens],
 ];
 
 async function router() {
@@ -643,7 +714,7 @@ async function router() {
   const hit = ROUTES.find(([re]) => re.test(hash));
   if (!hit) { view.innerHTML = '<p class="empty">Page not found.</p>'; return; }
   $$('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.nav === hit[1]));
-  if ((hit[1] === 'users' || hit[1] === 'integrations') && STATE.user.role !== 'admin') { view.innerHTML = '<p class="empty">Only admins can open this page.</p>'; return; }
+  if ((hit[1] === 'users' || hit[1] === 'integrations' || hit[1] === 'api-tokens') && STATE.user.role !== 'admin') { view.innerHTML = '<p class="empty">Only admins can open this page.</p>'; return; }
   if (!STATE.pid) { view.innerHTML = '<p class="empty">Create a project to get started.</p>'; return; }
   try { await hit[2](hit[0].exec(hash)[1]); }
   catch (e) { view.innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
@@ -1690,7 +1761,7 @@ async function viewBug(id) {
   };
 }
 
-const NAV_ICONS = { dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug' };
+const NAV_ICONS = { dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key' };
 $$('#nav a').forEach((a) => { a.innerHTML = withIcon(NAV_ICONS[a.dataset.nav], a.textContent); });
 $('#new-project').innerHTML = withIcon('plus', 'New project');
 
