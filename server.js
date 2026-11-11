@@ -10,6 +10,7 @@ const { DatabaseSync } = require('node:sqlite');
 const importer = require('./lib/import');
 const exporter = require('./lib/export');
 const authRoutes = require('./routes/auth');
+const tokens = require('./routes/tokens');
 const secret = require('./lib/secret');
 
 const PORT = process.env.PORT !== undefined ? Number(process.env.PORT) : 4780;
@@ -149,7 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_sr_exec ON step_results(execution_id);
 
 // ---------- helpers ----------
 class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
 }
 const now = () => new Date().toISOString();
 // A response that is not JSON (file downloads).
@@ -181,6 +182,7 @@ addColumn('cycles', 'plan_id', 'INTEGER REFERENCES plans(id) ON DELETE SET NULL'
 // Reuse: steps that call another test case, and data sets (one execution per row).
 addColumn('steps', 'call_case_id', 'INTEGER REFERENCES cases(id) ON DELETE SET NULL');
 addColumn('cases', 'params', "TEXT NOT NULL DEFAULT ''");
+addColumn('executions', 'executed_by_label', "TEXT NOT NULL DEFAULT ''"); // who ran it when it was not a signed-in user (an API token)
 addColumn('executions', 'iteration', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('executions', 'iteration_label', "TEXT NOT NULL DEFAULT ''");
 addColumn('executions', 'run_id', "TEXT NOT NULL DEFAULT ''");
@@ -774,7 +776,7 @@ route('GET', '/api/cycles/:id', ({ params }) => {
   c.plan_name = plan ? plan.name : '';
   c.executions = q(`SELECT e.id, e.case_id, e.case_key, e.case_title, e.status, e.executed_at, e.assignee_id, e.iteration, e.iteration_label,
       (SELECT display_name FROM users WHERE id=e.assignee_id) AS assignee_name,
-      (SELECT display_name FROM users WHERE id=e.executed_by) AS executed_by_name,
+      COALESCE((SELECT display_name FROM users WHERE id=e.executed_by), NULLIF(e.executed_by_label, '')) AS executed_by_name,
       (SELECT COUNT(*) FROM step_results s WHERE s.execution_id=e.id) AS step_count,
       (SELECT COUNT(*) FROM step_results s WHERE s.execution_id=e.id AND s.status!='Not Executed') AS steps_done,
       (SELECT COUNT(*) FROM bugs b WHERE b.execution_id=e.id) AS bug_count
@@ -857,7 +859,7 @@ route('DELETE', '/api/cycles/:id', ({ params }) => tx(() => {
 // --- executions ---
 route('GET', '/api/executions/:id', ({ params }) => {
   const ex = need(q(`SELECT e.*, (SELECT display_name FROM users WHERE id=e.assignee_id) AS assignee_name,
-    (SELECT display_name FROM users WHERE id=e.executed_by) AS executed_by_name, c.key AS cycle_key, c.name AS cycle_name, c.environment, c.build, c.project_id, c.adhoc
+    COALESCE((SELECT display_name FROM users WHERE id=e.executed_by), NULLIF(e.executed_by_label, '')) AS executed_by_name, c.key AS cycle_key, c.name AS cycle_name, c.environment, c.build, c.project_id, c.adhoc
     FROM executions e JOIN cycles c ON c.id=e.cycle_id WHERE e.id=?`).get(params.id), 'Execution');
   const atts = q(`SELECT a.id, a.owner_id, a.filename, a.mime, a.size FROM attachments a
     WHERE a.owner_type='step' AND a.owner_id IN (SELECT id FROM step_results WHERE execution_id=?) ORDER BY a.id`).all(ex.id);
@@ -1065,13 +1067,16 @@ seed();
 versions.backfill(); // the demo cases created by seed() above
 
 // ---------- feature modules ----------
-const ctx = { route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links };
+const ctx = { route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links,
+  snapshotCase, rollup, insertCase, saveAttachment, setAutomationKey, autoKeyTaken, planOrNull };
 secret.init(DATA_DIR);
 authRoutes.install(ctx);
 require('./routes/integrations').install(ctx);
 require('./routes/reports').install(ctx);
 require('./routes/plans').install(ctx);
 require('./routes/traceability').install(ctx);
+tokens.install(ctx);
+require('./routes/ci').install(ctx);
 
 // ---------- http ----------
 const STATIC = {
@@ -1090,6 +1095,19 @@ function send(res, status, body, headers = {}) {
   res.end(body);
 }
 const sendJson = (res, status, obj) => send(res, status, JSON.stringify(obj), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+
+function readRaw(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) { reject(new HttpError(413, 'Request too large')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -1145,13 +1163,22 @@ const server = http.createServer(async (req, res) => {
       if (r.method !== req.method) continue;
       const m = r.re.exec(p);
       if (!m) continue;
-      const user = authRoutes.userFromRequest(req);
-      if (!r.opts.public) {
-        if (!user) throw new HttpError(401, 'Sign in required');
-        if (r.opts.admin && user.role !== 'admin') throw new HttpError(403, 'Only admins can do this');
-        if (req.method !== 'GET' && user.role === 'viewer' && !r.opts.viewer) throw new HttpError(403, 'Your account is read-only');
+      // CI routes take an API token in a header and nothing else; every other route needs a signed-in user.
+      let user = null, apiToken = null;
+      if (r.opts.token) apiToken = tokens.authenticate(req);
+      else {
+        user = authRoutes.userFromRequest(req);
+        if (!r.opts.public) {
+          if (!user) throw new HttpError(401, 'Sign in required');
+          if (r.opts.admin && user.role !== 'admin') throw new HttpError(403, 'Only admins can do this');
+          if (req.method !== 'GET' && user.role === 'viewer' && !r.opts.viewer) throw new HttpError(403, 'Your account is read-only');
+        }
       }
-      if (req.method !== 'GET') {
+      if (apiToken && req.method !== 'GET' && req.method !== 'DELETE') {
+        // A bearer token is not sent by browsers on their own, so there is no cross-site risk; just insist on the right body type.
+        const wanted = r.opts.raw ? /^(application|text)\/(xml|plain)|^application\/octet-stream/i : /^application\/json/i;
+        if (!wanted.test(req.headers['content-type'] || '')) throw new HttpError(415, r.opts.raw ? 'Content-Type must be application/xml (or text/xml)' : 'Content-Type must be application/json');
+      } else if (req.method !== 'GET') {
         // Writes must come from this site (SameSite=Strict cookies already stop most cross-site requests) and be JSON.
         const origin = req.headers.origin;
         if (origin !== undefined) {
@@ -1165,8 +1192,8 @@ const server = http.createServer(async (req, res) => {
       }
       const params = {};
       r.keys.forEach((k, i) => { params[k] = Number(m[i + 1]); });
-      const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req);
-      const out = await r.handler({ params, body, query: url.searchParams, user, req });
+      const body = req.method === 'GET' || req.method === 'DELETE' ? {} : r.opts.raw ? await readRaw(req) : await readBody(req);
+      const out = await r.handler({ params, body, query: url.searchParams, user, req, token: apiToken });
       if (out instanceof Raw) return send(res, 200, out.body, out.headers);
       return sendJson(res, 200, out);
     }
@@ -1174,7 +1201,7 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     const status = e instanceof HttpError ? e.status : 500;
     if (status === 500) console.error(e);
-    if (!res.headersSent) sendJson(res, status, { error: status === 500 ? 'Internal server error' : e.message });
+    if (!res.headersSent) sendJson(res, status, { error: status === 500 ? 'Internal server error' : e.message, ...(status !== 500 && e.extra ? e.extra : {}) });
     else res.end();
   }
 });
