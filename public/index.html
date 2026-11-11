@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Proofdeck</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <aside class="side">
+    <a class="brand" href="#/"><span class="logo" aria-hidden="true"></span>Proofdeck</a>
+    <label class="proj">
+      <span>Project</span>
+      <select id="project"></select>
+    </label>
+    <nav id="nav">
+      <a href="#/" data-nav="dash">Overview</a>
+      <a href="#/cases" data-nav="cases">Test cases</a>
+      <a href="#/plans" data-nav="plans">Test plans</a>
+      <a href="#/cycles" data-nav="cycles">Test cycles</a>
+      <a href="#/bugs" data-nav="bugs">Bugs</a>
+      <a href="#/reports" data-nav="reports">Reports</a>
+      <a href="#/integrations" data-nav="integrations" data-admin hidden>Integrations</a>
+      <a href="#/users" data-nav="users" data-admin hidden>Users</a>
+    </nav>
+    <button class="btn ghost small" id="new-project" type="button">+ New project</button>
+    <button class="me-btn" id="me" type="button" hidden></button>
+  </aside>
+  <main id="view" tabindex="-1"></main>
+  <div id="auth" class="auth" hidden></div>
+  <dialog id="dlg"></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

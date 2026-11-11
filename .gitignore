@@ -1,0 +1,11 @@
+# runtime data: database, session/secret material, backups
+data/
+*.db
+*.db-shm
+*.db-wal
+secret.key
+
+# test output
+e2e/out/
+node_modules/
+.DS_Store
