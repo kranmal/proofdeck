@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "test": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=4",
-    "reset-password": "node --disable-warning=ExperimentalWarning scripts/reset-password.js"
+    "reset-password": "node --disable-warning=ExperimentalWarning scripts/reset-password.js",
+    "check-integration": "node --disable-warning=ExperimentalWarning scripts/check-integration.js"
   },
   "engines": {
     "node": ">=22.13"

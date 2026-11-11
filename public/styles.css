@@ -279,6 +279,8 @@ label.radio input { width: auto; margin: 0; }
 
 /* ---------- requirements ---------- */
 .addlink { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) minmax(160px, 2fr) auto; gap: 8px; margin-top: 8px; }
+.chip.auto { padding: 0 8px; font-size: 12px; font-weight: 600; vertical-align: 1px; }
+.impopts { margin-top: 10px; align-items: end; }
 .chip.ext small { color: var(--muted); font-weight: 400; }
 .chip.ext a { display: inline-flex; align-items: center; gap: 6px; color: inherit; }
 .chip.ext .x { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0 0 0 4px; display: inline-grid; place-items: center; }

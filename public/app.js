@@ -699,11 +699,12 @@ async function runCase(caseId) {
 const IMPORT_FIELDS = [
   ['title', 'Title (required)'], ['action', 'Step: action'], ['test_data', 'Step: test data'], ['expected', 'Step: expected result'],
   ['precondition', 'Preconditions'], ['objective', 'Objective'], ['folder', 'Folder'], ['priority', 'Priority'], ['status', 'Status'],
-  ['labels', 'Labels'], ['key', 'Source ID (only used to tell cases apart)'],
+  ['labels', 'Labels'], ['links', 'Requirements (issue keys)'], ['automation_key', 'Automation key'],
+  ['key', 'Source ID (tells cases apart; matches existing cases when updating)'],
 ];
 
 function openImport(onDone) {
-  let payload = null, parsed = null, mapping = {}, seq = 0;
+  let payload = null, parsed = null, mapping = {}, seq = 0, mode = 'create', strip = false;
   openDialog(`
     <h2>Import test cases</h2>
     <p class="muted">CSV or Excel (.xlsx). One row per step, with the test case fields on the first row of each case — the layout Zephyr Scale and most tools export.
@@ -712,8 +713,9 @@ function openImport(onDone) {
     <div id="imp"></div>
     <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary" id="imp-go" disabled>Import</button></footer>`,
     async () => {
-      const r = await api('POST', `/api/projects/${STATE.pid}/import`, { rows: parsed.rows, mapping });
-      toast(`Imported ${r.cases} test case${r.cases === 1 ? '' : 's'} (${esc(r.firstKey)}${r.cases > 1 ? ' – ' + esc(r.lastKey) : ''})`);
+      const r = await api('POST', `/api/projects/${STATE.pid}/import`, { rows: parsed.rows, mapping, mode, stripHtml: strip });
+      toast([r.created ? `Created ${r.created} test case${r.created === 1 ? '' : 's'}${r.firstKey ? ` (${esc(r.firstKey)}${r.created > 1 ? ' – ' + esc(r.lastKey) : ''})` : ''}` : '', r.updated ? `updated ${r.updated}` : '',
+        r.ambiguous ? `${r.ambiguous} skipped (several matches)` : '', r.keyConflicts ? `${r.keyConflicts} automation key${r.keyConflicts === 1 ? '' : 's'} already in use` : ''].filter(Boolean).join(', '));
       onDone();
     },
     (form) => {
@@ -724,14 +726,15 @@ function openImport(onDone) {
         const out = $('#imp-prev', form);
         if (!(mapping.title >= 0)) { out.innerHTML = '<p class="warn">Choose the column that holds the test case title.</p>'; return; }
         try {
-          const p = await api('POST', `/api/projects/${STATE.pid}/import`, { rows: parsed.rows, mapping, dryRun: true });
+          const p = await api('POST', `/api/projects/${STATE.pid}/import`, { rows: parsed.rows, mapping, mode, stripHtml: strip, dryRun: true });
           if (mine !== seq) return;
-          out.innerHTML = `<p><b>${p.cases}</b> test case${p.cases === 1 ? '' : 's'} with <b>${p.steps}</b> step${p.steps === 1 ? '' : 's'} will be created.
+          out.innerHTML = `<p>${mode === 'create' ? `<b>${p.cases}</b> test case${p.cases === 1 ? '' : 's'} with <b>${p.steps}</b> step${p.steps === 1 ? '' : 's'} will be created.`
+            : `<b>${p.created}</b> will be created and <b>${p.updated}</b> updated${p.ambiguous ? `; <b>${p.ambiguous}</b> skipped because several test cases match` : ''} (the file has <b>${p.steps}</b> step${p.steps === 1 ? '' : 's'}).`}
             ${p.withoutSteps ? `${p.withoutSteps} ha${p.withoutSteps === 1 ? 's' : 've'} no steps.` : ''}
             ${p.skipped ? `${p.skipped} row${p.skipped === 1 ? '' : 's'} skipped (no title on or above them).` : ''}</p>
-            ${p.preview.length ? `<table class="mini"><thead><tr><th>First test cases</th><th>Folder</th><th>Priority</th><th class="num">Steps</th></tr></thead><tbody>
-              ${p.preview.map((c) => `<tr><td>${esc(c.title)}</td><td>${esc(c.folder)}</td><td>${pill(c.priority)}</td><td class="num">${c.steps}</td></tr>`).join('')}</tbody></table>` : ''}`;
-          go.disabled = !p.cases;
+            ${p.preview.length ? `<table class="mini"><thead><tr><th>First test cases</th><th>Folder</th><th>Priority</th><th class="num">Steps</th><th>Result</th></tr></thead><tbody>
+              ${p.preview.map((c) => `<tr><td>${esc(c.title)}</td><td>${esc(c.folder)}</td><td>${pill(c.priority)}</td><td class="num">${c.steps}</td><td>${c.action === 'update' ? `Update ${esc(c.target)}` : c.action === 'ambiguous' ? 'Skipped' : 'New'}</td></tr>`).join('')}</tbody></table>` : ''}`;
+          go.disabled = !(p.created + p.updated);
         } catch (err) { if (mine === seq) out.innerHTML = `<p class="warn">${esc(err.message)}</p>`; }
       };
       const load = async (sheet) => {
@@ -740,12 +743,15 @@ function openImport(onDone) {
         try {
           parsed = await api('POST', '/api/import/parse', { ...payload, sheet });
           mapping = { ...parsed.mapping };
+          strip = !!parsed.hasHtml;
           const cols = (f) => `<option value="-1">— not imported —</option>` + parsed.headers.map((h, i) => `<option value="${i}"${mapping[f] === i ? ' selected' : ''}>${esc(h)}</option>`).join('');
           box.innerHTML = `
             <p><b>${parsed.rows.length}</b> row${parsed.rows.length === 1 ? '' : 's'} found${parsed.truncated ? ' (file cut off at 10,000 rows)' : ''}.
               ${parsed.sheets.length > 1 ? `<label class="inline">Sheet <select data-sheet>${parsed.sheets.map((n, i) => `<option value="${i}"${i === parsed.sheet ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select></label>` : ''}</p>
             <h3>Match columns</h3>
             <div class="mapgrid">${IMPORT_FIELDS.map(([f, label]) => `<label>${label}<select data-map="${f}">${cols(f)}</select></label>`).join('')}</div>
+            <div class="two impopts"><label>If a test case already exists<select data-mode><option value="create">Always create new test cases</option><option value="update_id">Update the one with the same ID</option><option value="update_title">Update the one with the same title and folder</option></select></label>
+              <label class="check"><input type="checkbox" data-html${strip ? ' checked' : ''}> Remove HTML formatting${parsed.hasHtml ? ' <small>(found in this file)</small>' : ''}</label></div>
             <div id="imp-prev"></div>`;
           await preview();
         } catch (err) { parsed = null; box.innerHTML = `<p class="warn">${esc(err.message)}</p>`; }
@@ -759,6 +765,8 @@ function openImport(onDone) {
           payload = { filename: p.filename, data: p.data };
           await load();
         } else if (e.target.matches('[data-sheet]')) await load(Number(e.target.value));
+        else if (e.target.matches('[data-mode]')) { mode = e.target.value; await preview(); }
+        else if (e.target.matches('[data-html]')) { strip = e.target.checked; await preview(); }
         else if (e.target.matches('[data-map]')) {
           const v = Number(e.target.value);
           if (v >= 0) mapping[e.target.dataset.map] = v; else delete mapping[e.target.dataset.map];
@@ -843,11 +851,11 @@ async function viewCases() {
   await load();
   const visible = () => {
     const t = U.term.toLowerCase();
-    return cases.filter((c) => inFolder(c.folder, U.folder, U.deep) && (!t || `${c.key} ${c.title} ${c.labels} ${c.refs || ''}`.toLowerCase().includes(t)));
+    return cases.filter((c) => inFolder(c.folder, U.folder, U.deep) && (!t || `${c.key} ${c.title} ${c.labels} ${c.refs || ''} ${c.automation_key || ''}`.toLowerCase().includes(t)));
   };
   const row = (c) => `<tr draggable="true" data-id="${c.id}"${U.sel.has(c.id) ? ' class="picked"' : ''}>
     <td class="cb"><input type="checkbox" data-sel="${c.id}"${U.sel.has(c.id) ? ' checked' : ''} aria-label="Select ${esc(c.key)}"></td>
-    <td><a href="#/cases/${c.id}"><span class="key">${esc(c.key)}</span> ${esc(c.title)}</a></td>
+    <td><a href="#/cases/${c.id}"><span class="key">${esc(c.key)}</span> ${esc(c.title)}</a>${c.automation_key ? ` <span class="chip ext auto" title="Automation key: ${esc(c.automation_key)}">Automated</span>` : ''}</td>
     <td>${esc(c.folder)}</td><td>${pill(c.priority)}</td><td>${pill(c.status)}</td><td class="num">${c.step_count}</td>
     <td>${c.last_status ? pill(c.last_status) : '<span class="muted">Never run</span>'}</td>
     <td class="num">${c.open_bugs || ''}</td>
@@ -1047,6 +1055,7 @@ async function viewCaseEdit(id) {
       <label class="wide">Title<input id="f-title" value="${esc(c.title)}" maxlength="200" required></label>
       <label>Folder<input id="f-folder" value="${esc(c.folder)}" placeholder="e.g. Checkout/Payments" list="dl-folders" autocomplete="off"></label>${folderList(folders)}
       <label>Labels<input id="f-labels" value="${esc(c.labels)}" placeholder="comma separated"></label>
+      <label>Automation key<small>How a CI test is matched to this case</small><input id="f-automation_key" value="${esc(c.automation_key)}" placeholder="e.g. tests/login.spec.ts::signs in" maxlength="300" autocomplete="off" spellcheck="false"></label>
       <label>Priority<select id="f-priority">${options(['High', 'Medium', 'Low'], c.priority)}</select></label>
       <label>Status<select id="f-status">${options(['Draft', 'Approved', 'Deprecated'], c.status)}</select></label>
       <label class="wide">Objective<textarea id="f-objective" rows="2">${esc(c.objective)}</textarea></label>
@@ -1135,7 +1144,7 @@ async function viewCaseEdit(id) {
         syncParams();
         if (steps.some((s) => s.call_case_id === 0)) throw new Error('Choose which test case each “call” step should run');
         const body = { steps, params: params.columns.length ? params : null, links: links.map(({ ref, title, url }) => ({ ref, title, url })) };
-        for (const f of ['title', 'folder', 'labels', 'priority', 'status', 'objective', 'precondition']) body[f] = $(`#f-${f}`).value;
+        for (const f of ['title', 'folder', 'labels', 'automation_key', 'priority', 'status', 'objective', 'precondition']) body[f] = $(`#f-${f}`).value;
         if (!body.title.trim()) { $('#f-title').focus(); throw new Error('Title is required'); }
         if (isNew) await api('POST', `/api/projects/${STATE.pid}/cases`, body);
         else await api('PUT', `/api/cases/${id}`, body);

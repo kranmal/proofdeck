@@ -185,6 +185,9 @@ addColumn('executions', 'iteration', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('executions', 'iteration_label', "TEXT NOT NULL DEFAULT ''");
 addColumn('executions', 'run_id', "TEXT NOT NULL DEFAULT ''");
 addColumn('step_results', 'origin', "TEXT NOT NULL DEFAULT ''");
+// Automation key: how a CI test or script is matched to its test case. Unique per project when set.
+addColumn('cases', 'automation_key', "TEXT NOT NULL DEFAULT ''");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_case_autokey ON cases(project_id, automation_key) WHERE automation_key != ''");
 addColumn('executions', 'case_version', 'INTEGER');
 
 // A plan id belonging to the project, or null for "no plan".
@@ -193,6 +196,14 @@ function planOrNull(projectId, v) {
   const id = Number(v);
   if (!Number.isInteger(id) || !q('SELECT 1 FROM plans WHERE id=? AND project_id=?').get(id, projectId)) throw new HttpError(400, 'Unknown test plan');
   return id;
+}
+
+const autoKeyTaken = (projectId, key, exceptId) => q('SELECT key FROM cases WHERE project_id=? AND automation_key=? AND id!=?').get(projectId, key, exceptId);
+function setAutomationKey(caseId, projectId, value) {
+  const v = str(value).trim().slice(0, 300);
+  const clash = v && autoKeyTaken(projectId, v, caseId);
+  if (clash) throw new HttpError(409, `The automation key “${v}” is already used by ${clash.key}`);
+  q('UPDATE cases SET automation_key=? WHERE id=?').run(v, caseId);
 }
 
 // An assignee is a user id, or null for "unassigned".
@@ -321,6 +332,7 @@ function insertCase(projectId, d, userId = null) {
     normFolder(d.folder), str(d.labels).trim(), t, t, userId, userId, cleanParams(d.params)).lastInsertRowid);
   replaceSteps(id, d.steps);
   if (d.links !== undefined) links.replaceLinks(id, d.links);
+  if (str(d.automation_key).trim()) setAutomationKey(id, projectId, d.automation_key);
   versions.recordVersion(id, userId);
   return { id, key };
 }
@@ -443,7 +455,7 @@ route('GET', '/api/projects/:pid/summary', ({ params, user }) => {
 
 // --- test cases ---
 route('GET', '/api/projects/:pid/cases', ({ params }) =>
-  q(`SELECT c.id, c.key, c.title, c.priority, c.status, c.folder, c.labels, c.updated_at,
+  q(`SELECT c.id, c.key, c.title, c.priority, c.status, c.folder, c.labels, c.updated_at, c.automation_key,
       (SELECT COUNT(*) FROM steps s WHERE s.case_id=c.id) AS step_count,
       (SELECT e.status FROM executions e WHERE e.case_id=c.id AND e.executed_at IS NOT NULL
          ORDER BY e.executed_at DESC LIMIT 1) AS last_status,
@@ -463,23 +475,72 @@ route('POST', '/api/import/parse', ({ body }) => {
   catch (e) { if (e instanceof importer.ImportError) throw new HttpError(400, e.message); throw e; }
 });
 
+// Apply a row group from a file to an existing test case. Only the columns the file maps are touched; steps are
+// replaced only if the file has steps for the case; priority/status only if the file really gave a known value.
+function applyImportUpdate(existing, c, mapped, userId) {
+  const sets = [], vals = [];
+  const set = (f, v) => { sets.push(`${f}=?`); vals.push(v); };
+  if (mapped.includes('title') && c.title) set('title', c.title);
+  for (const f of ['objective', 'precondition']) if (mapped.includes(f)) set(f, c[f]);
+  if (mapped.includes('labels')) set('labels', str(c.labels).trim());
+  if (mapped.includes('priority') && c.has.priority) set('priority', c.priority);
+  if (mapped.includes('status') && c.has.status) set('status', c.status);
+  if (mapped.includes('folder')) set('folder', normFolder(c.folder));
+  if (sets.length) q(`UPDATE cases SET ${sets.join(', ')}, updated_at=?, updated_by=? WHERE id=?`).run(...vals, now(), userId, existing.id);
+  if (c.steps.length) replaceSteps(existing.id, c.steps);
+  if (mapped.includes('links')) links.replaceLinks(existing.id, c.links);
+  let keyConflict = false;
+  if (mapped.includes('automation_key') && c.automation_key) {
+    if (autoKeyTaken(existing.project_id, c.automation_key, existing.id)) keyConflict = true;
+    else q('UPDATE cases SET automation_key=? WHERE id=?').run(c.automation_key.slice(0, 300), existing.id);
+  }
+  versions.recordVersion(existing.id, userId, { note: 'Updated by import' });
+  return keyConflict;
+}
+
+// mode: "create" always adds new cases; "update_id" updates the case whose key equals the file's ID; "update_title"
+// updates the single case with the same title and folder. Anything that does not match is created.
 route('POST', '/api/projects/:pid/import', ({ params, body, user }) => {
   need(q('SELECT 1 FROM projects WHERE id=?').get(params.pid), 'Project');
+  const mode = str(body.mode, 'create');
+  if (!['create', 'update_id', 'update_title'].includes(mode)) throw new HttpError(400, 'Unknown import mode');
   let built;
-  try { built = importer.buildCases(body.rows, body.mapping); }
+  try { built = importer.buildCases(body.rows, body.mapping, { stripHtml: !!body.stripHtml }); }
   catch (e) { if (e instanceof importer.ImportError) throw new HttpError(400, e.message); throw e; }
-  const { cases, skipped } = built;
+  const { cases, skipped, mapped } = built;
+
+  const existing = q('SELECT id, project_id, key, title, folder FROM cases WHERE project_id=?').all(params.pid);
+  const byKey = new Map(existing.map((c) => [c.key.toLowerCase(), c]));
+  const plan = cases.map((c) => {
+    if (mode === 'update_id' && c.key && byKey.has(c.key.toLowerCase())) return { c, target: byKey.get(c.key.toLowerCase()) };
+    if (mode === 'update_title') {
+      const hits = existing.filter((e) => e.title.toLowerCase() === c.title.toLowerCase() && e.folder === normFolder(c.folder));
+      if (hits.length === 1) return { c, target: hits[0] };
+      if (hits.length > 1) return { c, ambiguous: true };
+    }
+    return { c };
+  });
   const summary = {
     cases: cases.length, steps: cases.reduce((n, c) => n + c.steps.length, 0), skipped,
     withoutSteps: cases.filter((c) => !c.steps.length).length,
-    preview: cases.slice(0, 5).map((c) => ({ title: c.title, folder: c.folder, priority: c.priority, status: c.status, steps: c.steps.length })),
+    created: plan.filter((x) => !x.target && !x.ambiguous).length, updated: plan.filter((x) => x.target).length, ambiguous: plan.filter((x) => x.ambiguous).length,
+    preview: plan.slice(0, 5).map((x) => ({ title: x.c.title, folder: x.c.folder, priority: x.c.priority, status: x.c.status, steps: x.c.steps.length,
+      action: x.target ? 'update' : x.ambiguous ? 'ambiguous' : 'create', target: x.target ? x.target.key : '' })),
   };
   if (body.dryRun) return summary;
   if (!cases.length) throw new HttpError(400, 'No test cases found with this column mapping');
   if (cases.length > 2000) throw new HttpError(400, 'More than 2000 test cases in one file. Split the file and import in parts.');
   return tx(() => {
-    const created = cases.map((c) => insertCase(params.pid, c, user.id));
-    return { ...summary, firstKey: created[0].key, lastKey: created[created.length - 1].key };
+    const createdKeys = [], updatedKeys = [];
+    let keyConflicts = 0;
+    for (const x of plan) {
+      if (x.ambiguous) continue;
+      if (x.target) { if (applyImportUpdate(x.target, x.c, mapped, user.id)) keyConflicts++; updatedKeys.push(x.target.key); continue; }
+      const c = { ...x.c };
+      if (c.automation_key && autoKeyTaken(params.pid, c.automation_key, 0)) { keyConflicts++; c.automation_key = ''; }
+      createdKeys.push(insertCase(params.pid, c, user.id).key);
+    }
+    return { ...summary, firstKey: createdKeys[0] || null, lastKey: createdKeys.at(-1) || null, updatedKeys: updatedKeys.slice(0, 50), keyConflicts };
   });
 });
 
@@ -520,6 +581,7 @@ route('PUT', '/api/cases/:id', ({ params, body, user }) => {
   return tx(() => {
     update('cases', params.id, body, ['title', 'objective', 'precondition', 'priority', 'status', 'folder', 'labels']);
     q('UPDATE cases SET updated_by=? WHERE id=?').run(user.id, params.id);
+    if (body.automation_key !== undefined) setAutomationKey(params.id, q('SELECT project_id FROM cases WHERE id=?').get(params.id).project_id, body.automation_key);
     if (body.params !== undefined) q('UPDATE cases SET params=? WHERE id=?').run(cleanParams(body.params), params.id);
     if (body.steps !== undefined) replaceSteps(params.id, body.steps);
     if (body.links !== undefined) links.replaceLinks(params.id, body.links);
@@ -662,7 +724,13 @@ route('GET', '/api/projects/:pid/export', ({ params, query }) => {
     byCase.get(s.case_id).push(s);
   }
   const names = new Map(q('SELECT id, key, title FROM cases WHERE project_id=?').all(params.pid).map((c) => [c.id, c]));
+  const reqs = new Map();
+  for (const l of q('SELECT l.case_id, l.ref FROM case_links l JOIN cases c ON c.id=l.case_id WHERE c.project_id=? ORDER BY l.id').all(params.pid)) {
+    if (!reqs.has(l.case_id)) reqs.set(l.case_id, []);
+    reqs.get(l.case_id).push(l.ref);
+  }
   for (const c of cases) {
+    c.requirements = (reqs.get(c.id) || []).join(', ');
     c.steps = (byCase.get(c.id) || []).map((s) => (s.call_case_id && names.has(s.call_case_id)
       ? { ...s, action: `Call test case ${names.get(s.call_case_id).key}: ${names.get(s.call_case_id).title}` } : s));
   }
