@@ -435,6 +435,14 @@ async function viewIntegrations() {
   const field = (kind, f, label, { type = 'text', hint = '', ph = '', def = '' } = {}) =>
     `<label>${label}${hint ? `<small>${hint}</small>` : ''}<input data-f="${f}" type="${type}" value="${type === 'password' ? '' : val(kind, f, def)}" placeholder="${esc(type === 'password' && by[kind] ? 'Saved. Leave blank to keep it.' : ph)}" autocomplete="off" spellcheck="false"></label>`;
   const head = (kind, title, blurb) => `<div class="int-head"><h2>${icon('plug')} ${title}</h2>${by[kind] ? pill('Connected') : '<span class="pill">Not set up</span>'}</div><p class="muted">${blurb}</p>`;
+  const sv = (kind, k, d) => (by[kind] && by[kind].config.sync && by[kind].config.sync[k] !== undefined ? by[kind].config.sync[k] : d);
+  const syncBlock = (kind) => `<h3>Keep bug status in step</h3>
+    <label class="check"><input type="checkbox" data-s="pull"${sv(kind, 'pull', true) ? ' checked' : ''}> When the issue changes, update the bug <small>(checked every few minutes, or instantly with a webhook)</small></label>
+    <label class="check"><input type="checkbox" data-s="push"${sv(kind, 'push', false) ? ' checked' : ''}> When someone changes the bug’s status in Proofdeck, close or reopen the issue</label>
+    <div class="two"><label>When the issue is closed, set the bug to<select data-s="onClose">${['Resolved', 'Closed'].map((o) => `<option${sv(kind, 'onClose', 'Resolved') === o ? ' selected' : ''}>${o}</option>`).join('')}</select></label>
+      <label>When it is reopened, set the bug to<select data-s="onReopen">${['Open', 'In Progress'].map((o) => `<option${sv(kind, 'onReopen', 'Open') === o ? ' selected' : ''}>${o}</option>`).join('')}</select></label></div>
+    ${by[kind] ? `<div class="int-actions"><button type="button" class="btn ghost small" data-act="syncall" data-kind="${kind}">${withIcon('rotate', 'Sync all bugs now')}</button>
+      <button type="button" class="btn ghost small" data-act="webhook" data-kind="${kind}">Instant updates (webhook)…</button></div><div class="webhook" data-hook="${kind}" hidden></div>` : ''}`;
   const actions = (kind) => `<div class="int-actions"><button type="button" class="btn ghost" data-act="test" data-kind="${kind}">Test connection</button>
     <button type="button" class="btn primary" data-act="save" data-kind="${kind}">${withIcon('save', 'Save')}</button>
     ${by[kind] ? `<button type="button" class="btn danger" data-act="remove" data-kind="${kind}">${withIcon('trash', 'Remove')}</button>` : ''}
@@ -445,15 +453,17 @@ async function viewIntegrations() {
     <section class="card" data-card="github">${head('github', 'GitHub issues', 'Create an issue from a bug. Use a fine-grained personal access token with <b>Issues: Read and write</b> on the repository. GitHub’s API cannot upload images, so screenshots stay in Proofdeck.')}
       <div class="form">${field('github', 'owner', 'Owner', { ph: 'acme' })}${field('github', 'repo', 'Repository', { ph: 'shop' })}
         ${field('github', 'labels', 'Labels', { hint: 'Comma separated. A severity label is added.', def: 'bug' })}${field('github', 'token', 'Token', { type: 'password', ph: 'github_pat_…' })}
-        <div class="wide">${field('github', 'base', 'API URL', { hint: 'Only change this for GitHub Enterprise, e.g. https://ghe.example.com/api/v3', def: 'https://api.github.com' })}</div></div>${actions('github')}</section>
+        <div class="wide">${field('github', 'base', 'API URL', { hint: 'Only change this for GitHub Enterprise, e.g. https://ghe.example.com/api/v3', def: 'https://api.github.com' })}</div></div>${syncBlock('github')}${actions('github')}</section>
     <section class="card" data-card="jira">${head('jira', 'Jira Cloud', 'Create an issue with its screenshots attached. Create an API token at id.atlassian.com under Security. The account needs permission to create issues and add attachments.')}
       <div class="form">${field('jira', 'base', 'Site URL', { ph: 'https://your-team.atlassian.net' })}${field('jira', 'email', 'Account email', { ph: 'you@company.com' })}
         ${field('jira', 'projectKey', 'Project key', { ph: 'PROJ' })}${field('jira', 'issueType', 'Issue type', { def: 'Bug' })}
-        ${field('jira', 'labels', 'Extra labels', { hint: 'Comma separated. “proofdeck” and a severity label are always added.' })}${field('jira', 'token', 'API token', { type: 'password', ph: 'ATATT…' })}</div>${actions('jira')}</section>`;
+        ${field('jira', 'labels', 'Extra labels', { hint: 'Comma separated. “proofdeck” and a severity label are always added.' })}${field('jira', 'token', 'API token', { type: 'password', ph: 'ATATT…' })}</div>${syncBlock('jira')}${actions('jira')}</section>`;
   const read = (kind) => {
     const card = $(`[data-card=${kind}]`, view);
     const v = Object.fromEntries($$('[data-f]', card).map((i) => [i.dataset.f, i.value]));
     const { token, ...config } = v;
+    const sy = (k) => $(`[data-s=${k}]`, card);
+    config.sync = { pull: sy('pull').checked, push: sy('push').checked, onClose: sy('onClose').value, onReopen: sy('onReopen').value };
     return { config, token };
   };
   view.onclick = async (e) => {
@@ -462,6 +472,23 @@ async function viewIntegrations() {
     const kind = b.dataset.kind, msg = $(`[data-msg=${kind}]`, view);
     const say = (text, bad) => { msg.textContent = text; msg.className = 'int-msg' + (bad ? ' bad' : ' good'); };
     try {
+      if (b.dataset.act === 'syncall') {
+        b.disabled = true;
+        try { const r = await api('POST', `/api/projects/${STATE.pid}/sync`, {}); toast(`Checked ${r.checked} bug${r.checked === 1 ? '' : 's'}: ${r.changed} changed${r.errors ? `, ${r.errors} could not be reached` : ''}`); } finally { b.disabled = false; }
+        return;
+      }
+      if (b.dataset.act === 'webhook' || b.dataset.act === 'webhook-new') {
+        const box = $(`[data-hook=${kind}]`, view);
+        if (b.dataset.act === 'webhook-new' && !confirm('Create a new secret? The old one stops working, so update it in the webhook settings of the other system.')) return;
+        const w = await api(b.dataset.act === 'webhook' ? 'GET' : 'POST', `/api/projects/${STATE.pid}/integrations/${kind}/webhook`, b.dataset.act === 'webhook' ? undefined : {});
+        const url = w.url || `${location.origin}${w.path}`;
+        box.hidden = false;
+        box.innerHTML = `<p class="muted">Optional. Without it, changes are picked up by the regular check. ${w.url ? '' : '<b>Set the public address on the Email page so this URL is the one other systems can reach.</b> '}Proofdeck must be reachable from ${KIND_LABEL[kind]}.</p>
+          ${kind === 'github' ? `<ol><li>In the repository: <b>Settings → Webhooks → Add webhook</b>.</li><li>Payload URL: <code>${esc(url)}</code></li><li>Content type: <code>application/json</code>. Secret: below. Events: <b>Issues</b>.</li></ol>`
+            : `<ol><li>In Jira: <b>System → WebHooks → Create</b>. Events: <b>Issue → updated</b>.</li><li>URL: <code>${esc(url)}?secret=${esc(w.secret)}</code></li></ol>`}
+          <div class="tokenbox"><input readonly value="${esc(w.secret)}" aria-label="Webhook secret" spellcheck="false"><button type="button" class="btn ghost small" data-act="webhook-new" data-kind="${kind}">New secret</button></div>`;
+        return;
+      }
       if (b.dataset.act === 'remove') {
         if (!confirm(`Remove the ${KIND_LABEL[kind]} connection? Bugs already sent keep their links.`)) return;
         await api('DELETE', `/api/projects/${STATE.pid}/integrations/${kind}`);
@@ -1858,8 +1885,9 @@ async function viewBug(id) {
         <button class="btn primary" data-act="save">${withIcon('save', 'Save')}</button></span></header>
       <p class="meta">${b.case_key ? `Found by ${b.case_id ? `<a href="#/cases/${b.case_id}">${esc(b.case_key)}</a>` : esc(b.case_key)} step ${b.step_no} in
         ${b.execution_id ? `<a href="#/run/${b.execution_id}">${esc(b.cycle_key)}</a>` : esc(b.cycle_key)} · ` : ''}Created ${fmtDate(b.created_at)}${b.reporter_name ? ` by ${esc(b.reporter_name)}` : ''} · Updated ${fmtDate(b.updated_at)}</p>
-      <div class="links">${b.links.map((l) => `<a class="chip ext" href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer">${icon('link')}<span>${esc(KIND_LABEL[l.kind] || l.kind)} ${esc(l.external_key)}</span></a>`).join('')}
-        ${integrations.filter((i) => !b.links.some((l) => l.kind === i.kind)).map((i) => `<button type="button" class="btn small ghost" data-act="push" data-kind="${esc(i.kind)}">${withIcon('upload', `Send to ${esc(KIND_LABEL[i.kind] || i.kind)}`)}</button>`).join('')}</div>
+      <div class="links">${b.links.map((l) => `<a class="chip ext" href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer">${icon('link')}<span>${esc(KIND_LABEL[l.kind] || l.kind)} ${esc(l.external_key)}${l.external_label || l.external_state ? ` · ${esc(l.external_label || l.external_state)}` : ''}</span></a>`).join('')}
+        ${integrations.filter((i) => !b.links.some((l) => l.kind === i.kind)).map((i) => `<button type="button" class="btn small ghost" data-act="push" data-kind="${esc(i.kind)}">${withIcon('upload', `Send to ${esc(KIND_LABEL[i.kind] || i.kind)}`)}</button>`).join('')}${b.links.length ? `<button type="button" class="btn small ghost" data-act="sync" title="Check the linked issues now">${withIcon('rotate', 'Sync now')}</button>` : ''}</div>
+      ${b.links.filter((l) => l.sync_error).map((l) => `<p class="warn">Could not sync with ${esc(KIND_LABEL[l.kind] || l.kind)} ${esc(l.external_key)}: ${esc(l.sync_error)}</p>`).join('')}
       <section class="card form">
         <label class="wide">Title<input id="b-title" value="${esc(b.title)}" maxlength="300"></label>
         <label>Status<select id="b-status">${options(['Open', 'In Progress', 'Resolved', 'Closed'], b.status)}</select></label>
@@ -1899,7 +1927,17 @@ async function viewBug(id) {
       else if (t.dataset.act === 'md') { await navigator.clipboard.writeText(bugMarkdown({ ...b, ...read() })); toast('Bug report copied as Markdown'); }
       else if (t.dataset.act === 'rm-shot') { await api('DELETE', `/api/attachments/${t.dataset.id}`); await reload(); }
       else if (t.dataset.act === 'annotate') await openAnnotator(Number(t.dataset.id), reload);
-      else if (t.dataset.act === 'push') {
+      else if (t.dataset.act === 'sync') {
+        t.disabled = true;
+        try {
+          await save();
+          const r = await api('POST', `/api/bugs/${id}/sync`, {});
+          const moved = r.links.filter((l) => l.changed), failed = r.links.filter((l) => l.error);
+          toast(moved.length ? moved.map((l) => `${esc(l.key)} is ${esc(l.label)}: bug is now ${esc(l.to)}`).join('<br>') : failed.length ? `Could not reach ${failed.map((l) => esc(l.key)).join(', ')}` : 'Already up to date');
+          b = await api('GET', `/api/bugs/${id}`);
+          render();
+        } catch (err) { t.disabled = false; throw err; }
+      } else if (t.dataset.act === 'push') {
         t.disabled = true;
         try {
           await save();

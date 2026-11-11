@@ -342,6 +342,7 @@ function parseParams(text) {
 
 const versions = require('./lib/versions')({ q, now, str, normFolder, replaceSteps, checkEnum, HttpError });
 const links = require('./lib/links')({ q, str, HttpError });
+const syncHooks = { statusChanged() {} }; // set by routes/sync.js
 const notifier = require('./lib/notify')({ q, now, str });
 versions.backfill();
 
@@ -999,7 +1000,7 @@ route('GET', '/api/bugs/:id', ({ params }) => {
   const b = need(q(`SELECT b.*, (SELECT display_name FROM users WHERE id=b.reported_by) AS reporter_name,
     (SELECT display_name FROM users WHERE id=b.assignee_id) AS assignee_name FROM bugs b WHERE b.id=?`).get(params.id), 'Bug');
   b.attachments = attachmentsOf('bug', b.id);
-  b.links = q('SELECT kind, external_key, url, created_at FROM bug_links WHERE bug_id=? ORDER BY id').all(b.id);
+  b.links = q('SELECT kind, external_key, url, created_at, external_state, external_label, synced_at, sync_error FROM bug_links WHERE bug_id=? ORDER BY id').all(b.id);
   b.comments = q(`SELECT c.id, c.body, c.created_at, c.user_id, u.display_name AS author FROM bug_comments c
     LEFT JOIN users u ON u.id=c.user_id WHERE c.bug_id=? ORDER BY c.id`).all(b.id);
   return b;
@@ -1038,6 +1039,7 @@ route('PUT', '/api/bugs/:id', ({ params, body, user }) => {
     notifier.notify(after.assignee_id, { kind: 'bug-assigned', title: `${user.display_name} assigned ${after.key} to you: ${after.title}`, body: after.actual, link, projectId: after.project_id });
   }
   if (after.status !== before.status) {
+    syncHooks.statusChanged(after, before.status, after.status, user);
     for (const uid of new Set([after.reported_by, after.assignee_id])) {
       if (uid && uid !== user.id) notifier.notify(uid, { kind: 'bug-status', title: `${after.key} is now ${after.status}`, body: `${user.display_name} changed “${after.title}” from ${before.status} to ${after.status}.`, link, projectId: after.project_id });
     }
@@ -1109,12 +1111,13 @@ seed();
 versions.backfill(); // the demo cases created by seed() above
 
 // ---------- feature modules ----------
-const ctx = { route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links, notifier,
+const ctx = { route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links, notifier, addColumn, syncHooks,
   snapshotCase, rollup, insertCase, saveAttachment, setAutomationKey, autoKeyTaken, planOrNull };
 secret.init(DATA_DIR);
 authRoutes.install(ctx);
 require('./routes/notifications').install(ctx);
 require('./routes/integrations').install(ctx);
+require('./routes/sync').install(ctx);
 require('./routes/reports').install(ctx);
 require('./routes/plans').install(ctx);
 require('./routes/traceability').install(ctx);
