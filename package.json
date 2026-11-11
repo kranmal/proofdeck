@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
-    "test": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=4"
+    "test": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=4",
+    "reset-password": "node --disable-warning=ExperimentalWarning scripts/reset-password.js"
   },
   "engines": {
     "node": ">=22.13"
