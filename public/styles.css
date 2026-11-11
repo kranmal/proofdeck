@@ -256,6 +256,21 @@ label.radio input { width: auto; margin: 0; }
   .card { overflow-x: auto; }
 }
 
+/* ---------- notifications ---------- */
+.badge { margin-left: auto; min-width: 22px; padding: 0 7px; border-radius: 999px; background: var(--fail); color: #fff; font-size: 12px; font-weight: 700; text-align: center; line-height: 20px; }
+.notifs { list-style: none; margin: 0; padding: 0; }
+.notifs li { border-bottom: 1px solid var(--line); }
+.notifs li:last-child { border-bottom: 0; }
+.notifs a { display: flex; gap: 12px; padding: 12px 16px; color: var(--ink); align-items: flex-start; }
+.notifs a:hover { background: var(--hover); text-decoration: none; }
+.notifs .dot { flex: none; width: 10px; height: 10px; margin-top: 6px; border-radius: 50%; background: transparent; border: 2px solid var(--line); }
+.notifs li.unread .dot { background: var(--accent); border-color: var(--accent); }
+.notifs li.unread b { font-weight: 700; }
+.notifs li.read b { font-weight: 500; color: var(--muted); }
+.nt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.nb { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.authalt { text-align: center; margin: 0; }
+
 /* ---------- API tokens ---------- */
 .code { margin: 0; padding: 12px 14px; background: var(--hover); border: 1px solid var(--line); border-radius: 8px; overflow: auto; white-space: pre; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .codewrap { position: relative; }

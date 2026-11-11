@@ -3,13 +3,14 @@
 
 const crypto = require('node:crypto');
 const auth = require('../lib/auth');
+const { validEmail } = require('../lib/smtp');
 
 let ctx;
 const limiter = new auth.Limiter();
 const ROLES = ['admin', 'tester', 'viewer'];
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const tokenOf = (req) => auth.parseCookies(req.headers.cookie)[auth.COOKIE] || '';
-const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role };
+const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role, email: u.email || '', notify_email: u.notify_email || 'instant' };
 
 // Returns the signed-in user (with _sid, the session hash) or null.
 function userFromRequest(req) {
@@ -57,7 +58,7 @@ function install(c) {
   const { route, q, tx, now, str, need, HttpError } = c;
   const userCount = () => q('SELECT COUNT(*) n FROM users').get().n;
 
-  route('GET', '/api/auth/me', ({ user }) => ({ user: publicUser(user), needsSetup: userCount() === 0 }), { public: true });
+  route('GET', '/api/auth/me', ({ user }) => ({ user: publicUser(user), needsSetup: userCount() === 0, resetAvailable: !!(ctx.resetAvailable && ctx.resetAvailable()) }), { public: true });
 
   route('POST', '/api/auth/setup', async ({ body, req }) => {
     if (userCount() > 0) throw new HttpError(403, 'Setup has already been completed');
@@ -103,10 +104,26 @@ function install(c) {
     return { ok: true };
   }, { viewer: true });
 
+  // Your own contact details and how you want to hear about things.
+  route('PUT', '/api/auth/profile', ({ body, user }) => {
+    const sets = [], vals = [];
+    if (body.email !== undefined) {
+      const email = str(body.email).trim();
+      if (email && !validEmail(email)) throw new HttpError(400, 'That does not look like an email address');
+      sets.push('email=?'); vals.push(email);
+    }
+    if (body.notify_email !== undefined) {
+      if (!['instant', 'daily', 'off'].includes(body.notify_email)) throw new HttpError(400, 'Choose instant, daily or off');
+      sets.push('notify_email=?'); vals.push(body.notify_email);
+    }
+    if (sets.length) q(`UPDATE users SET ${sets.join(',')} WHERE id=?`).run(...vals, user.id);
+    return { user: publicUser(q('SELECT * FROM users WHERE id=?').get(user.id)) };
+  }, { viewer: true });
+
   // Everyone signed in can list active users (for assignee pickers); admins also see roles and inactive accounts.
   route('GET', '/api/users', ({ user }) => {
     if (user.role !== 'admin') return q('SELECT id, username, display_name FROM users WHERE active=1 ORDER BY display_name COLLATE NOCASE').all();
-    return q('SELECT id, username, display_name, role, active, created_at, last_login FROM users ORDER BY active DESC, display_name COLLATE NOCASE').all();
+    return q('SELECT id, username, display_name, email, role, active, created_at, last_login FROM users ORDER BY active DESC, display_name COLLATE NOCASE').all();
   });
 
   route('POST', '/api/users', async ({ body }) => {
@@ -115,8 +132,10 @@ function install(c) {
     if (!ROLES.includes(role)) throw new HttpError(400, 'Invalid role');
     if (q('SELECT 1 FROM users WHERE username=?').get(v.username)) throw new HttpError(409, `The username “${v.username}” is taken`);
     const hash = await auth.hashPassword(v.password);
-    const id = Number(q('INSERT INTO users(username, display_name, password_hash, role, created_at) VALUES (?,?,?,?,?)')
-      .run(v.username, v.display, hash, role, now()).lastInsertRowid);
+    const email = str(body.email).trim();
+    if (email && !validEmail(email)) throw new HttpError(400, 'That does not look like an email address');
+    const id = Number(q('INSERT INTO users(username, display_name, password_hash, role, created_at, email) VALUES (?,?,?,?,?,?)')
+      .run(v.username, v.display, hash, role, now(), email).lastInsertRowid);
     return { id };
   }, { admin: true });
 
@@ -127,6 +146,11 @@ function install(c) {
       const d = str(body.display_name).trim().slice(0, 80);
       if (!d) throw new HttpError(400, 'Name is required');
       sets.push('display_name=?'); vals.push(d);
+    }
+    if (body.email !== undefined) {
+      const email = str(body.email).trim();
+      if (email && !validEmail(email)) throw new HttpError(400, 'That does not look like an email address');
+      sets.push('email=?'); vals.push(email);
     }
     if (body.role !== undefined) {
       if (!ROLES.includes(body.role)) throw new HttpError(400, 'Invalid role');

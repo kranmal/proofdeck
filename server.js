@@ -60,6 +60,7 @@ const db = new DatabaseSync(path.join(DATA_DIR, 'proofdeck.db'));
 db.exec(`
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+PRAGMA secure_delete = ON; -- overwritten or deleted values (reset links, old tokens) are zeroed, not left in free pages
 
 CREATE TABLE IF NOT EXISTS projects (
   id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
@@ -92,6 +93,22 @@ CREATE TABLE IF NOT EXISTS plans (
 CREATE TABLE IF NOT EXISTS case_links (
   id INTEGER PRIMARY KEY, case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
   ref TEXT NOT NULL COLLATE NOCASE, title TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '', UNIQUE(case_id, ref)
+);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, kind TEXT NOT NULL, title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '', link TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, read_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read_at);
+CREATE TABLE IF NOT EXISTS outbox (
+  id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, to_addr TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL,
+  kind TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_at TEXT, error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, sent_at TEXT
+);
+CREATE TABLE IF NOT EXISTS password_resets (
+  token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS folders (
   id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -169,6 +186,9 @@ function addColumn(table, col, ddl) {
 const USER_REF = 'INTEGER REFERENCES users(id) ON DELETE SET NULL';
 // Standalone ("ad hoc") runs live in one cycle per project.
 addColumn('cycles', 'adhoc', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('users', 'email', "TEXT NOT NULL DEFAULT ''");
+addColumn('users', 'notify_email', "TEXT NOT NULL DEFAULT 'instant'"); // instant | daily | off
+addColumn('users', 'digest_cursor', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('cycles', 'created_by', USER_REF);
 addColumn('cases', 'created_by', USER_REF);
 addColumn('cases', 'updated_by', USER_REF);
@@ -322,6 +342,7 @@ function parseParams(text) {
 
 const versions = require('./lib/versions')({ q, now, str, normFolder, replaceSteps, checkEnum, HttpError });
 const links = require('./lib/links')({ q, str, HttpError });
+const notifier = require('./lib/notify')({ q, now, str });
 versions.backfill();
 
 function insertCase(projectId, d, userId = null) {
@@ -885,7 +906,12 @@ route('GET', '/api/executions/:id', ({ params }) => {
 route('PUT', '/api/executions/:id', ({ params, body, user }) => {
   need(q('SELECT 1 FROM executions WHERE id=?').get(params.id), 'Execution');
   if (body.comment !== undefined) q('UPDATE executions SET comment=? WHERE id=?').run(str(body.comment), params.id);
-  if (body.assignee_id !== undefined) q('UPDATE executions SET assignee_id=? WHERE id=?').run(assigneeOrNull(body.assignee_id), params.id);
+  if (body.assignee_id !== undefined) {
+    const to = assigneeOrNull(body.assignee_id);
+    const ex = q('SELECT e.id, e.case_key, e.case_title, e.assignee_id, c.key AS cycle_key, c.project_id FROM executions e JOIN cycles c ON c.id=e.cycle_id WHERE e.id=?').get(params.id);
+    q('UPDATE executions SET assignee_id=? WHERE id=?').run(to, params.id);
+    if (to && to !== ex.assignee_id && to !== user.id) notifier.notify(to, { kind: 'run-assigned', title: `${user.display_name} assigned ${ex.case_key} ${ex.case_title} (${ex.cycle_key}) to you`, link: `#/run/${ex.id}`, projectId: ex.project_id });
+  }
   if (body.status !== undefined) {
     if (!EXEC_STATUS.includes(body.status)) throw new HttpError(400, 'Invalid status');
     q('UPDATE executions SET status=?, executed_at=?, executed_by=? WHERE id=?')
@@ -980,11 +1006,17 @@ route('GET', '/api/bugs/:id', ({ params }) => {
 });
 
 route('POST', '/api/bugs/:id/comments', ({ params, body, user }) => {
-  need(q('SELECT 1 FROM bugs WHERE id=?').get(params.id), 'Bug');
+  const bug = need(q('SELECT * FROM bugs WHERE id=?').get(params.id), 'Bug');
   const text = str(body.body).trim();
   if (!text) throw new HttpError(400, 'Comment is empty');
   if (text.length > 10000) throw new HttpError(400, 'Comment is too long');
   const id = Number(q('INSERT INTO bug_comments(bug_id, user_id, body, created_at) VALUES (?,?,?,?)').run(params.id, user.id, text, now()).lastInsertRowid);
+  // Tell the people involved: anyone @mentioned, plus the reporter, the assignee and earlier commenters.
+  const link = `#/bugs/${bug.id}`, snippet = text.length > 300 ? `${text.slice(0, 300)}…` : text;
+  const mentioned = new Set(notifier.mentions(text));
+  for (const uid of mentioned) if (uid !== user.id) notifier.notify(uid, { kind: 'mention', title: `${user.display_name} mentioned you on ${bug.key}`, body: snippet, link, projectId: bug.project_id });
+  const watchers = new Set([bug.reported_by, bug.assignee_id, ...q('SELECT DISTINCT user_id FROM bug_comments WHERE bug_id=? AND user_id IS NOT NULL').all(bug.id).map((r) => r.user_id)]);
+  for (const uid of watchers) if (uid && uid !== user.id && !mentioned.has(uid)) notifier.notify(uid, { kind: 'comment', title: `${user.display_name} commented on ${bug.key}: ${bug.title}`, body: snippet, link, projectId: bug.project_id });
   return { id };
 });
 
@@ -995,11 +1027,21 @@ route('DELETE', '/api/bug-comments/:id', ({ params, user }) => {
   return { ok: true };
 });
 
-route('PUT', '/api/bugs/:id', ({ params, body }) => {
-  need(q('SELECT 1 FROM bugs WHERE id=?').get(params.id), 'Bug');
+route('PUT', '/api/bugs/:id', ({ params, body, user }) => {
+  const before = need(q('SELECT * FROM bugs WHERE id=?').get(params.id), 'Bug');
   if (body.title !== undefined && !str(body.title).trim()) throw new HttpError(400, 'Title is required');
   update('bugs', params.id, body, ['title', 'status', 'severity', 'priority', 'environment', 'expected', 'actual', 'steps_to_reproduce']);
   if (body.assignee_id !== undefined) q('UPDATE bugs SET assignee_id=?, updated_at=? WHERE id=?').run(assigneeOrNull(body.assignee_id), now(), params.id);
+  const after = q('SELECT * FROM bugs WHERE id=?').get(params.id);
+  const link = `#/bugs/${after.id}`;
+  if (after.assignee_id && after.assignee_id !== before.assignee_id && after.assignee_id !== user.id) {
+    notifier.notify(after.assignee_id, { kind: 'bug-assigned', title: `${user.display_name} assigned ${after.key} to you: ${after.title}`, body: after.actual, link, projectId: after.project_id });
+  }
+  if (after.status !== before.status) {
+    for (const uid of new Set([after.reported_by, after.assignee_id])) {
+      if (uid && uid !== user.id) notifier.notify(uid, { kind: 'bug-status', title: `${after.key} is now ${after.status}`, body: `${user.display_name} changed “${after.title}” from ${before.status} to ${after.status}.`, link, projectId: after.project_id });
+    }
+  }
   return { ok: true };
 });
 
@@ -1067,10 +1109,11 @@ seed();
 versions.backfill(); // the demo cases created by seed() above
 
 // ---------- feature modules ----------
-const ctx = { route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links,
+const ctx = { route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links, notifier,
   snapshotCase, rollup, insertCase, saveAttachment, setAutomationKey, autoKeyTaken, planOrNull };
 secret.init(DATA_DIR);
 authRoutes.install(ctx);
+require('./routes/notifications').install(ctx);
 require('./routes/integrations').install(ctx);
 require('./routes/reports').install(ctx);
 require('./routes/plans').install(ctx);

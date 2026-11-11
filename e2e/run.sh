@@ -22,7 +22,7 @@ failed=0
 for script in e2e/[0-9]*.mjs; do
   case "${1:-}" in "") ;; *) [[ "$script" == *"$1"* ]] || continue ;; esac
   fuser -k $PORT_APP/tcp 2>/dev/null; sleep 0.3; rm -rf "$WORK/data"
-  DATA_DIR="$WORK/data" PORT=$PORT_APP node --disable-warning=ExperimentalWarning server.js >"$WORK/server.log" 2>&1 &
+  DATA_DIR="$WORK/data" PORT=$PORT_APP NOTIFY_TICK_MS=200 NOTIFY_BACKOFF_MS=100 node --disable-warning=ExperimentalWarning server.js >"$WORK/server.log" 2>&1 &
   disown
   for _ in $(seq 1 30); do curl -s "http://127.0.0.1:$PORT_APP/api/auth/me" >/dev/null && break; sleep 0.3; done
   echo "== $script"

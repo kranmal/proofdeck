@@ -40,6 +40,8 @@ const ICON_PATHS = {
   save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
   'arrow-left': '<path d="M19 12H5"/><path d="m12 5-7 7 7 7"/>',
   'arrow-right': '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
   rotate: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.8"/><path d="M17.5 14.2A5.5 5.5 0 0 1 21.5 20"/>',
   logout: '<path d="M9 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="m16 8 4 4-4 4M20 12H9"/>',
@@ -476,6 +478,132 @@ async function viewIntegrations() {
   };
 }
 
+// ---------- notifications ----------
+let notifTimer = null;
+function setBadge(n) {
+  const link = $('#nav a[data-nav=notifications]');
+  if (!link) return;
+  let b = $('.badge', link);
+  if (!n) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement('span'); b.className = 'badge'; link.append(b); }
+  b.textContent = n > 99 ? '99+' : String(n);
+  b.setAttribute('aria-label', `${n} unread`);
+}
+async function refreshBadge() {
+  try { setBadge((await fetch('/api/notifications/unread-count').then((r) => (r.ok ? r.json() : { count: 0 }))).count); } catch { /* offline */ }
+}
+function startNotifPolling() { stopNotifPolling(); refreshBadge(); notifTimer = setInterval(() => { if (document.visibilityState === 'visible') refreshBadge(); }, 30000); }
+function stopNotifPolling() { clearInterval(notifTimer); notifTimer = null; setBadge(0); }
+
+async function viewNotifications() {
+  const { items, unread } = await api('GET', '/api/notifications?limit=100');
+  setBadge(unread);
+  view.innerHTML = `
+    <header class="head"><h1>Notifications</h1><span>${unread ? `<button class="btn ghost" data-act="all">${withIcon('check', 'Mark all as read')}</button>` : ''}
+      <button class="btn ghost" data-act="prefs">${withIcon('mail', 'Email settings')}</button></span></header>
+    <p class="meta">${unread ? `${unread} unread` : 'You are all caught up'}${STATE.user.email ? '' : ' · <a href="#" data-act="prefs">Add your email address</a> to get these by email too'}</p>
+    <section class="card flush">${items.length ? `<ul class="notifs">${items.map((n) => `<li class="${n.read_at ? 'read' : 'unread'}">
+      <a href="${esc(n.link || '#/notifications')}" data-id="${n.id}"><span class="dot" aria-hidden="true"></span>
+        <span class="nt"><b>${esc(n.title)}</b>${n.body ? `<span class="nb">${esc(n.body)}</span>` : ''}<small>${fmtDate(n.created_at)}${n.read_at ? '' : ' · unread'}</small></span></a></li>`).join('')}</ul>`
+      : '<p class="empty">Nothing yet. You will see assignments, comments, mentions and status changes here.</p>'}</section>`;
+  view.onclick = async (e) => {
+    const prefs = e.target.closest('[data-act=prefs]');
+    if (prefs) { e.preventDefault(); openAccount(); return; }
+    if (e.target.closest('[data-act=all]')) { await api('POST', '/api/notifications/read', { all: true }); router(); return; }
+    const a = e.target.closest('a[data-id]');
+    if (a && a.closest('li.unread')) { api('POST', '/api/notifications/read', { ids: [Number(a.dataset.id)] }).then(refreshBadge).catch(() => {}); }
+  };
+}
+
+// ---------- email settings (admin) ----------
+async function viewEmailSettings() {
+  const st = await api('GET', '/api/settings/notifications');
+  const m = st.smtp || { host: '', port: 587, security: 'starttls', user: '', hasPassword: false, from: '', fromName: 'Proofdeck', tlsVerify: true };
+  view.innerHTML = `
+    <header class="head"><h1>Email</h1></header>
+    <p class="meta">Proofdeck can email notifications and password-reset links. It sends through your own mail server (SMTP). ${st.configured ? pill('Active') : '<span class="pill">Not set up</span>'}</p>
+    <section class="card"><h2>Mail server</h2>
+      <div class="form">
+        <label>Server<input data-f="host" value="${esc(m.host)}" placeholder="smtp.yourcompany.com" autocomplete="off"></label>
+        <label>Port<input data-f="port" type="number" min="1" max="65535" value="${esc(m.port)}"></label>
+        <label>Security<select data-f="security">${[['starttls', 'STARTTLS (usually port 587)'], ['tls', 'TLS from the start (usually port 465)'], ['none', 'None (only for a server on this machine)']].map(([v, l]) => `<option value="${v}"${m.security === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="check" style="align-self:end"><input type="checkbox" data-f="tlsVerify"${m.tlsVerify ? ' checked' : ''}> Verify the server’s certificate <small>(turn off only for an internal server with a self-signed one)</small></label>
+        <label>User name<small>Leave blank if the server needs no sign-in.</small><input data-f="user" value="${esc(m.user)}" autocomplete="off"></label>
+        <label>Password<input data-f="password" type="password" placeholder="${m.hasPassword ? 'Saved. Leave blank to keep it.' : ''}" autocomplete="new-password"></label>
+        <label>From address<input data-f="from" type="email" value="${esc(m.from)}" placeholder="proofdeck@yourcompany.com"></label>
+        <label>From name<input data-f="fromName" value="${esc(m.fromName)}"></label>
+      </div></section>
+    <section class="card"><h2>Links and summaries</h2>
+      <div class="form">
+        <label class="wide">Public address of Proofdeck<small>Used for links in emails, and required for password reset by email (so a forged request can never choose where the link points). Example: https://proofdeck.yourcompany.com</small>
+          <input data-f="publicUrl" value="${esc(st.publicUrl || st.envPublicUrl)}" placeholder="https://"></label>
+        <label>Send daily summaries after<select data-f="digestHour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}"${h === st.digestHour ? ' selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select></label>
+      </div>
+      <p>${st.resetAvailable ? pill('Active') : '<span class="pill">Off</span>'} Password reset by email ${st.resetAvailable ? 'is available on the sign-in screen' : 'needs both a working mail server and a public address'}.</p></section>
+    <section class="card"><h2>Try it</h2>
+      <div class="int-actions"><input data-f="testTo" type="email" placeholder="send a test email to…" value="${esc(STATE.user.email || '')}" style="max-width:340px" aria-label="Test recipient">
+        <button type="button" class="btn ghost" data-act="test">Send test email</button>
+        <button type="button" class="btn primary" data-act="save">${withIcon('save', 'Save')}</button><span class="int-msg" id="em-msg" role="status" aria-live="polite"></span></div></section>`;
+  const val = (f) => { const e = $(`[data-f=${f}]`, view); return e.type === 'checkbox' ? e.checked : e.value; };
+  const body = () => ({
+    smtp: { host: val('host'), port: val('port'), security: val('security'), user: val('user'), password: val('password'), from: val('from'), fromName: val('fromName'), tlsVerify: val('tlsVerify') },
+    publicUrl: val('publicUrl'), digestHour: Number(val('digestHour')),
+  });
+  view.onclick = async (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    const say = (t, bad) => { const el = $('#em-msg'); el.textContent = t; el.className = 'int-msg ' + (bad ? 'bad' : 'good'); };
+    b.disabled = true;
+    try {
+      if (b.dataset.act === 'save') { await api('PUT', '/api/settings/notifications', body()); toast('Email settings saved'); router(); }
+      else { say('Sending…'); await api('POST', '/api/settings/notifications/test', { to: val('testTo'), smtp: body().smtp }); say('Sent. Check the inbox.'); }
+    } catch (err) { say(err.message, true); } finally { b.disabled = false; }
+  };
+}
+
+// ---------- forgot / reset password ----------
+function authCard(inner) {
+  const a = $('#auth');
+  a.hidden = false;
+  a.innerHTML = `<form class="auth-card" id="auth-form"><div class="brand"><span class="logo" aria-hidden="true"></span>Proofdeck</div>${inner}</form>`;
+  return $('#auth-form');
+}
+function renderForgot() {
+  const f = authCard(`<h1>Reset your password</h1><p class="muted">Enter your username or email address. If an account matches, we email a link that works for one hour.</p>
+    <label>Username or email<input name="identifier" required autofocus maxlength="254" autocomplete="username"></label>
+    <p class="warn" id="auth-err" role="alert"></p><button class="btn primary" type="submit">Email me a link</button>
+    <p class="muted authalt"><a href="#" id="back">Back to sign in</a></p>`);
+  $('#back').onclick = (e) => { e.preventDefault(); renderAuth(false); };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = $('button', f); btn.disabled = true;
+    try {
+      const r = await fetch('/api/auth/forgot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: f.identifier.value }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'Something went wrong');
+      f.innerHTML = `<div class="brand"><span class="logo" aria-hidden="true"></span>Proofdeck</div><h1>Check your email</h1><p>${esc(d.message)}</p><button class="btn primary" type="button" id="back2">Back to sign in</button>`;
+      $('#back2').onclick = () => renderAuth(false);
+    } catch (err) { $('#auth-err').textContent = err.message; btn.disabled = false; }
+  };
+}
+function renderReset(token) {
+  const f = authCard(`<h1>Choose a new password</h1>
+    <label>New password<small>At least 8 characters.</small><input name="password" type="password" required minlength="8" autocomplete="new-password" autofocus></label>
+    <label>Repeat it<input name="again" type="password" required autocomplete="new-password"></label>
+    <p class="warn" id="auth-err" role="alert"></p><button class="btn primary" type="submit">Set password</button>`);
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    if (f.password.value !== f.again.value) { $('#auth-err').textContent = 'The two passwords differ'; return; }
+    const btn = $('button', f); btn.disabled = true;
+    try {
+      const r = await fetch('/api/auth/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, password: f.password.value }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'Something went wrong');
+      renderAuth(false, 'Password changed. Sign in with your new password.');
+    } catch (err) { $('#auth-err').textContent = err.message; btn.disabled = false; }
+  };
+}
+
 // ---------- API tokens (CI) ----------
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
@@ -553,7 +681,10 @@ const userSelect = (attrs, id, name) => `<select ${attrs}><option value="">Unass
 const refreshUsers = async () => { STATE.users = (await api('GET', '/api/users')).filter((u) => u.active !== 0); };
 const initials = (n) => String(n || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
 
+const forgotLine = () => (STATE.resetAvailable ? '<a href="#" id="forgot">Forgot your password?</a>' : 'Forgot your password? Ask an admin to reset it.');
+
 function renderAuth(needsSetup, message = '') {
+  stopNotifPolling();
   STATE.user = null;
   $('#me').hidden = true;
   const a = $('#auth');
@@ -567,7 +698,16 @@ function renderAuth(needsSetup, message = '') {
     <label>Password<input name="password" type="password" autocomplete="${needsSetup ? 'new-password' : 'current-password'}" required${needsSetup ? ' minlength="8"' : ''}>
       ${needsSetup ? '<small>At least 8 characters.</small>' : ''}</label>
     <p class="warn" id="auth-err" role="alert">${esc(message)}</p>
-    <button class="btn primary" type="submit">${needsSetup ? 'Create account' : 'Sign in'}</button></form>`;
+    <button class="btn primary" type="submit">${needsSetup ? 'Create account' : 'Sign in'}</button>
+    ${!needsSetup ? `<p class="muted authalt">${forgotLine()}</p>` : ''}</form>`;
+  const bindForgot = () => { const fg = $('#forgot'); if (fg) fg.onclick = (e) => { e.preventDefault(); renderForgot(); }; };
+  bindForgot();
+  // The flag is read when the page loads; an admin may have switched email on since, so ask again.
+  if (!needsSetup) fetch('/api/auth/me').then((r) => r.json()).then((me) => {
+    STATE.resetAvailable = !!me.resetAvailable;
+    const p = $('.authalt');
+    if (p) { p.innerHTML = forgotLine(); bindForgot(); }
+  }).catch(() => {});
   $('#auth-form').onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target, btn = $('button', f);
@@ -597,6 +737,7 @@ async function startApp(user) {
   me.title = 'Account';
   await refreshUsers();
   await loadProjects();
+  startNotifPolling();
   await router();
 }
 
@@ -604,12 +745,22 @@ function openAccount() {
   const u = STATE.user;
   openDialog(`<h2>Account</h2>
     <p>Signed in as <b>${esc(u.display_name)}</b> <span class="muted">(${esc(u.username)}, ${esc(u.role)})</span></p>
+    <h3>Email</h3>
+    <label>Email address<small>Used for notifications and to reset your password.</small><input type="email" name="email" value="${esc(u.email || '')}" maxlength="254" autocomplete="email"></label>
+    <label>Email me about my notifications<select name="notify_email">${[['instant', 'Straight away'], ['daily', 'Once a day, as a summary'], ['off', 'Never (I will check in the app)']].map(([v, l]) => `<option value="${v}"${u.notify_email === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
     <h3>Change password</h3>
-    <label>Current password<input type="password" name="current" autocomplete="current-password" required></label>
-    <label>New password<small>At least 8 characters. Your other sessions are signed out.</small><input type="password" name="next" autocomplete="new-password" minlength="8" required></label>
+    <label>Current password<input type="password" name="current" autocomplete="current-password"></label>
+    <label>New password<small>At least 8 characters. Your other sessions are signed out. Leave both blank to keep your password.</small><input type="password" name="next" autocomplete="new-password" minlength="8"></label>
     <footer><button type="button" class="btn ghost" data-signout>${withIcon('logout', 'Sign out')}</button><span class="spacer"></span>
-      <button type="button" class="btn ghost" data-close>Close</button><button type="submit" class="btn primary">Change password</button></footer>`,
-    async (fd) => { await api('POST', '/api/auth/password', { current: fd.get('current'), next: fd.get('next') }); toast('Password changed'); },
+      <button type="button" class="btn ghost" data-close>Close</button><button type="submit" class="btn primary">Save</button></footer>`,
+    async (fd) => {
+      const cur = fd.get('current'), nxt = fd.get('next');
+      if ((cur && !nxt) || (!cur && nxt)) throw new Error('To change your password, fill in both password fields');
+      const r = await api('PUT', '/api/auth/profile', { email: fd.get('email'), notify_email: fd.get('notify_email') });
+      Object.assign(STATE.user, r.user);
+      if (cur) await api('POST', '/api/auth/password', { current: cur, next: nxt });
+      toast(cur ? 'Saved. Password changed' : 'Saved');
+    },
     (form) => form.addEventListener('click', async (e) => {
       if (!e.target.closest('[data-signout]')) return;
       await fetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -626,8 +777,8 @@ async function viewUsers() {
   const roleSelect = (cur) => `<select name="role">${['admin', 'tester', 'viewer'].map((r) => `<option value="${r}"${r === cur ? ' selected' : ''}>${r} — ${ROLE_HELP[r]}</option>`).join('')}</select>`;
   view.innerHTML = `
     <header class="head"><h1>Users</h1><button class="btn primary" data-act="add">${withIcon('plus', 'Add user')}</button></header>
-    <section class="card flush"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead><tbody>
-    ${users.map((u) => `<tr><td>${esc(u.display_name)}</td><td class="muted">${esc(u.username)}</td><td>${pill(u.role)}</td>
+    <section class="card flush"><table><thead><tr><th>Name</th><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead><tbody>
+    ${users.map((u) => `<tr><td>${esc(u.display_name)}</td><td class="muted">${esc(u.username)}</td><td class="muted">${esc(u.email || '—')}</td><td>${pill(u.role)}</td>
       <td>${u.active ? pill('Active') : pill('Inactive')}</td><td class="muted">${fmtDate(u.last_login)}</td>
       <td class="num"><button type="button" class="icon" data-act="edit" data-id="${u.id}" title="Edit ${esc(u.username)}" aria-label="Edit ${esc(u.username)}">${icon('pencil')}</button>
         <button type="button" class="icon" data-act="reset" data-id="${u.id}" title="Reset password" aria-label="Reset password for ${esc(u.username)}">${icon('key')}</button></td></tr>`).join('')}
@@ -641,6 +792,7 @@ async function viewUsers() {
     if (b.dataset.act === 'add') {
       openDialog(`<h2>Add user</h2>
         <div class="two"><label>Username<input name="username" required maxlength="40" pattern="[A-Za-z0-9._\\-]{3,40}" autocomplete="off"></label><label>Name<input name="display_name" maxlength="80" autocomplete="off"></label></div>
+        <label>Email<small>Optional. Needed for email notifications and password reset.</small><input name="email" type="email" maxlength="254" autocomplete="off"></label>
         <label>Role${roleSelect('tester')}</label>
         <label>Initial password<small>At least 8 characters. Share it securely; they can change it from their account menu.</small><input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
         <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Add user</button></footer>`,
@@ -648,10 +800,11 @@ async function viewUsers() {
     } else if (b.dataset.act === 'edit') {
       openDialog(`<h2>Edit ${esc(u.username)}</h2>
         <label>Name<input name="display_name" value="${esc(u.display_name)}" required maxlength="80"></label>
+        <label>Email<input name="email" type="email" value="${esc(u.email || '')}" maxlength="254" autocomplete="off"></label>
         <label>Role${roleSelect(u.role)}</label>
         <label class="check"><input type="checkbox" name="active"${u.active ? ' checked' : ''}> Account is active <small>(inactive users cannot sign in)</small></label>
         <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Save</button></footer>`,
-        async (fd) => { await api('PUT', `/api/users/${u.id}`, { display_name: fd.get('display_name'), role: fd.get('role'), active: fd.get('active') === 'on' }); toast('User saved'); await done(); });
+        async (fd) => { await api('PUT', `/api/users/${u.id}`, { display_name: fd.get('display_name'), email: fd.get('email'), role: fd.get('role'), active: fd.get('active') === 'on' }); toast('User saved'); await done(); });
     } else if (b.dataset.act === 'reset') {
       openDialog(`<h2>Reset password for ${esc(u.username)}</h2>
         <label>New password<small>They are signed out everywhere and must use this one.</small><input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
@@ -703,18 +856,27 @@ const ROUTES = [
   [/^#\/users$/, 'users', viewUsers],
   [/^#\/integrations$/, 'integrations', viewIntegrations],
   [/^#\/api-tokens$/, 'api-tokens', viewApiTokens],
+  [/^#\/notifications$/, 'notifications', viewNotifications],
+  [/^#\/email-settings$/, 'email-settings', viewEmailSettings],
 ];
 
 async function router() {
   pasteHandler = keyHandler = null;
   view.onclick = view.onchange = view.oninput = view.ondrop = view.ondragover = null;
   view.ondragstart = view.ondragend = view.ondragleave = view.onkeydown = null;
+  // A password-reset link, whether it opened a fresh tab or just changed the hash of one that was already open.
+  const resetLink = /^#\/reset\/([\w-]+)$/.exec(location.hash);
+  if (resetLink) {
+    history.replaceState(null, '', location.pathname);
+    if (STATE.user) toast('You are signed in. Sign out first to use a password reset link.', true); else renderReset(resetLink[1]);
+    return;
+  }
   if (!STATE.user) return;
   const hash = location.hash || '#/';
   const hit = ROUTES.find(([re]) => re.test(hash));
   if (!hit) { view.innerHTML = '<p class="empty">Page not found.</p>'; return; }
   $$('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.nav === hit[1]));
-  if ((hit[1] === 'users' || hit[1] === 'integrations' || hit[1] === 'api-tokens') && STATE.user.role !== 'admin') { view.innerHTML = '<p class="empty">Only admins can open this page.</p>'; return; }
+  if ((hit[1] === 'users' || hit[1] === 'integrations' || hit[1] === 'api-tokens' || hit[1] === 'email-settings') && STATE.user.role !== 'admin') { view.innerHTML = '<p class="empty">Only admins can open this page.</p>'; return; }
   if (!STATE.pid) { view.innerHTML = '<p class="empty">Create a project to get started.</p>'; return; }
   try { await hit[2](hit[0].exec(hash)[1]); }
   catch (e) { view.innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
@@ -1761,13 +1923,16 @@ async function viewBug(id) {
   };
 }
 
-const NAV_ICONS = { dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key' };
+const NAV_ICONS = { dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail' };
 $$('#nav a').forEach((a) => { a.innerHTML = withIcon(NAV_ICONS[a.dataset.nav], a.textContent); });
 $('#new-project').innerHTML = withIcon('plus', 'New project');
 
 (async () => {
   try {
     const me = await (await fetch('/api/auth/me')).json();
-    if (me.user) await startApp(me.user); else renderAuth(me.needsSetup);
+    STATE.resetAvailable = !!me.resetAvailable;
+    const reset = /^#\/reset\/([\w-]+)$/.exec(location.hash);
+    if (reset && !me.user) { history.replaceState(null, '', location.pathname); renderReset(reset[1]); }
+    else if (me.user) await startApp(me.user); else renderAuth(me.needsSetup);
   } catch (err) { fail(err); }
 })();
