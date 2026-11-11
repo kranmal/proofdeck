@@ -11,6 +11,8 @@ const importer = require('./lib/import');
 const exporter = require('./lib/export');
 const authRoutes = require('./routes/auth');
 const tokens = require('./routes/tokens');
+const securityRoutes = require('./routes/security');
+const security = { audit() {}, loginEvent() {} }; // filled in by routes/security.js
 const secret = require('./lib/secret');
 
 const PORT = process.env.PORT !== undefined ? Number(process.env.PORT) : 4780;
@@ -494,7 +496,7 @@ const routes = [];
 function route(method, pattern, handler, opts = {}) {
   const keys = [];
   const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '(\\d+)'; }) + '$');
-  routes.push({ method, re, keys, handler, opts });
+  routes.push({ method, pattern, re, keys, handler, opts });
 }
 
 route('GET', '/api/projects', () => q('SELECT id, key, name FROM projects ORDER BY name').all());
@@ -1233,9 +1235,10 @@ seed();
 versions.backfill(); // the demo cases created by seed() above
 
 // ---------- feature modules ----------
-const ctx = { route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links, notifier, addColumn, syncHooks, fieldsApi, versions,
+const ctx = { security, route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links, notifier, addColumn, syncHooks, fieldsApi, versions,
   snapshotCase, rollup, insertCase, saveAttachment, setAutomationKey, autoKeyTaken, planOrNull };
 secret.init(DATA_DIR);
+securityRoutes.install(ctx);
 authRoutes.install(ctx);
 require('./routes/notifications').install(ctx);
 require('./routes/integrations').install(ctx);
@@ -1364,6 +1367,7 @@ const server = http.createServer(async (req, res) => {
       r.keys.forEach((k, i) => { params[k] = Number(m[i + 1]); });
       const body = req.method === 'GET' || req.method === 'DELETE' ? {} : r.opts.raw ? await readRaw(req) : await readBody(req);
       const out = await r.handler({ params, body, query: url.searchParams, user, req, token: apiToken });
+      security.audit({ method: req.method, pattern: r.pattern, path: p, params, body, user, token: apiToken, req, out });
       if (out instanceof Raw) return send(res, 200, out.body, out.headers);
       return sendJson(res, 200, out);
     }

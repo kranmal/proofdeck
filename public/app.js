@@ -746,9 +746,9 @@ async function viewApiTokens() {
   view.innerHTML = `
     <header class="head"><h1>API tokens</h1><button class="btn primary" data-act="new">${withIcon('plus', 'Create token')}</button></header>
     <p class="meta">Tokens let your CI system record test results in <b>${esc(proj ? proj.name : '')}</b>. A token works only for the CI endpoints below, never for the rest of Proofdeck. It is shown once when you create it; only a fingerprint is kept.</p>
-    <section class="card flush">${list.length ? `<table><thead><tr><th>Name</th><th>Token</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>
-      ${list.map((t) => `<tr${t.revoked_at ? ' class="revoked"' : ''}><td>${esc(t.name)}</td><td><code>${esc(t.prefix)}…</code></td><td class="muted">${fmtDate(t.created_at)}${t.created_by_name ? ` by ${esc(t.created_by_name)}` : ''}</td>
-        <td class="muted">${t.last_used_at ? fmtDate(t.last_used_at) : 'Never'}</td><td>${t.revoked_at ? pill('Revoked') : pill('Active')}</td>
+    <section class="card flush">${list.length ? `<table><thead><tr><th>Name</th><th>Token</th><th>Access</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map((t) => `<tr${t.revoked_at ? ' class="revoked"' : ''}><td>${esc(t.name)}</td><td><code>${esc(t.prefix)}…</code></td><td>${t.scope === 'read' ? 'Read only' : 'Send results'}</td><td class="muted">${fmtDate(t.created_at)}${t.created_by_name ? ` by ${esc(t.created_by_name)}` : ''}</td>
+        <td class="muted">${t.last_used_at ? fmtDate(t.last_used_at) : 'Never'}</td><td>${t.revoked_at ? pill('Revoked') : t.expires_at && t.expires_at <= new Date().toISOString() ? pill('Expired') : pill('Active')}${t.expires_at && !t.revoked_at && t.expires_at > new Date().toISOString() ? ` <small class="muted">until ${esc(t.expires_at.slice(0, 10))}</small>` : ''}</td>
         <td class="num">${t.revoked_at ? '' : `<button type="button" class="btn small danger" data-act="revoke" data-id="${t.id}" data-name="${esc(t.name)}">${withIcon('x', 'Revoke')}</button>`}</td></tr>`).join('')}</tbody></table>`
       : '<p class="empty">No tokens yet. Create one for each pipeline, so you can revoke them separately.</p>'}</section>
     <section class="card"><h2>Send results from CI</h2>
@@ -769,9 +769,11 @@ async function viewApiTokens() {
       } else if (b.dataset.act === 'new') {
         openDialog(`<h2>Create API token</h2>
           <label>Name<small>What will use it, for example “GitHub Actions”.</small><input name="name" required maxlength="60" autofocus autocomplete="off"></label>
+          <div class="two"><label>Access<select name="scope"><option value="write">Send results and check status</option><option value="read">Read only: check status, cannot send</option></select></label>
+            <label>Expires<select name="expires_in_days"><option value="">Never</option><option value="30">In 30 days</option><option value="90">In 90 days</option><option value="180">In 180 days</option><option value="365">In a year</option></select></label></div>
           <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Create token</button></footer>`,
           async (fd) => {
-            const t = await api('POST', `/api/projects/${STATE.pid}/api-tokens`, { name: fd.get('name') });
+            const t = await api('POST', `/api/projects/${STATE.pid}/api-tokens`, { name: fd.get('name'), scope: fd.get('scope'), expires_in_days: fd.get('expires_in_days') || null });
             setTimeout(() => {
               openDialog(`<h2>Copy your token now</h2>
                 <p class="warn">This is the only time it is shown. Store it in your CI system’s secrets.</p>
@@ -784,6 +786,62 @@ async function viewApiTokens() {
       }
     } catch (err) { fail(err); }
   };
+}
+
+// ---------- activity (audit log + sign-in history) ----------
+const browserOf = (ua) => {
+  const s = String(ua || '');
+  const os = /Windows/.test(s) ? 'Windows' : /Android/.test(s) ? 'Android' : /iPhone|iPad/.test(s) ? 'iOS' : /Mac OS X/.test(s) ? 'macOS' : /Linux/.test(s) ? 'Linux' : '';
+  const br = /Edg\//.test(s) ? 'Edge' : /Firefox\//.test(s) ? 'Firefox' : /Chrome\//.test(s) ? 'Chrome' : /Safari\//.test(s) ? 'Safari' : /curl|node|python|axios|fetch/i.test(s) ? 'Script' : s ? 'Browser' : 'Unknown device';
+  return os ? `${br} on ${os}` : br;
+};
+
+async function viewAudit() {
+  let tab = 'activity', items = [], next = null, text = '', fails = false, timer;
+  const load = async (more) => {
+    const qs = new URLSearchParams({ limit: '50' });
+    if (more && next) qs.set('before', next);
+    if (tab === 'activity' && text) qs.set('q', text);
+    if (tab === 'signins' && fails) qs.set('fails', '1');
+    const r = await api('GET', `/api/${tab === 'activity' ? 'audit' : 'login-events'}?${qs}`);
+    items = more ? items.concat(r.items) : r.items;
+    next = r.next;
+  };
+  const table = () => (tab === 'activity'
+    ? `<table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th><th>From</th></tr></thead><tbody>${items.map((e) => `<tr><td class="muted">${fmtDate(e.at)}</td><td>${esc(e.actor_name || 'System')}</td>
+        <td><b>${esc(e.action)}</b></td><td class="muted">${esc(e.detail)}</td><td class="muted">${esc(e.ip)}</td></tr>`).join('')}</tbody></table>`
+    : `<table><thead><tr><th>When</th><th>Username</th><th>Result</th><th>Reason</th><th>From</th><th>Device</th></tr></thead><tbody>${items.map((e) => `<tr><td class="muted">${fmtDate(e.at)}</td><td>${esc(e.username)}</td>
+        <td>${e.ok ? pill('Signed in') : '<span class="pill fail">Failed</span>'}</td><td class="muted">${esc(e.reason)}</td><td class="muted">${esc(e.ip)}</td><td class="muted">${esc(browserOf(e.user_agent))}</td></tr>`).join('')}</tbody></table>`);
+  const paintBody = () => {
+    $('#auditbody').innerHTML = items.length ? `<div class="tscroll">${table()}</div>${next ? `<p class="center"><button type="button" class="btn ghost" data-act="more">Show older</button></p>` : ''}`
+      : `<p class="empty">${tab === 'activity' ? (text ? 'Nothing matches that search.' : 'No changes recorded yet.') : 'No sign-ins recorded.'}</p>`;
+  };
+  const paint = () => {
+    view.innerHTML = `<header class="head"><h1>Activity</h1></header>
+      <p class="meta">Who changed what, and who signed in. Passwords, tokens and other secrets are never written here. Entries are kept for ${'a year'} (activity) and 6 months (sign-ins).</p>
+      <div class="filters"><span class="seg" role="group" aria-label="Show"><button type="button" class="btn small ${tab === 'activity' ? 'primary' : 'ghost'}" data-tab="activity" aria-pressed="${tab === 'activity'}">Changes</button>
+        <button type="button" class="btn small ${tab === 'signins' ? 'primary' : 'ghost'}" data-tab="signins" aria-pressed="${tab === 'signins'}">Sign-ins</button></span>
+        ${tab === 'activity' ? `<input id="asearch" type="search" placeholder="Search who, what or details" aria-label="Search activity" value="${esc(text)}">`
+          : `<label class="check"><input type="checkbox" id="afails"${fails ? ' checked' : ''}> Only failed attempts</label>`}</div>
+      <section class="card flush" id="auditbody"></section>`;
+    paintBody();
+  };
+  await load(false);
+  paint();
+  view.onclick = async (e) => {
+    try {
+      const t = e.target.closest('[data-tab]');
+      if (t) { tab = t.dataset.tab; await load(false); paint(); return; }
+      if (e.target.closest('[data-act=more]')) { await load(true); paintBody(); }
+    } catch (err) { fail(err); }
+  };
+  view.oninput = (e) => {
+    if (e.target.id !== 'asearch') return;
+    text = e.target.value.trim();
+    clearTimeout(timer);
+    timer = setTimeout(async () => { try { await load(false); paintBody(); } catch (err) { fail(err); } }, 250);
+  };
+  view.onchange = async (e) => { if (e.target.id === 'afails') { fails = e.target.checked; try { await load(false); paintBody(); } catch (err) { fail(err); } } };
 }
 
 // ---------- accounts ----------
@@ -864,6 +922,8 @@ function openAccount() {
     <h3>Change password</h3>
     <label>Current password<input type="password" name="current" autocomplete="current-password"></label>
     <label>New password<small>At least 8 characters. Your other sessions are signed out. Leave both blank to keep your password.</small><input type="password" name="next" autocomplete="new-password" minlength="8"></label>
+    <h3>Where you are signed in</h3><div id="sessions" class="sessions"><p class="muted">Loading…</p></div>
+    <details id="history"><summary>Recent sign-in attempts</summary><div id="hist" class="sessions"></div></details>
     <footer><button type="button" class="btn ghost" data-signout>${withIcon('logout', 'Sign out')}</button><span class="spacer"></span>
       <button type="button" class="btn ghost" data-close>Close</button><button type="submit" class="btn primary">Save</button></footer>`,
     async (fd) => {
@@ -874,13 +934,37 @@ function openAccount() {
       if (cur) await api('POST', '/api/auth/password', { current: cur, next: nxt });
       toast(cur ? 'Saved. Password changed' : 'Saved');
     },
-    (form) => form.addEventListener('click', async (e) => {
-      if (!e.target.closest('[data-signout]')) return;
-      await fetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      dlg.close();
-      location.hash = '#/';
-      renderAuth(false);
-    }));
+    (form) => {
+      const paintSessions = async () => {
+        try {
+          const list = await api('GET', '/api/auth/sessions');
+          $('#sessions', form).innerHTML = list.map((s) => `<div class="srow"><span><b>${esc(browserOf(s.user_agent))}</b>${s.current ? ' <span class="pill pass">This device</span>' : ''}<br><small class="muted">${esc(s.ip || 'unknown address')} · signed in ${fmtDate(s.created_at)} · last active ${fmtDate(s.last_seen_at || s.created_at)}</small></span>
+            ${s.current ? '' : `<button type="button" class="btn small ghost" data-kill="${s.id}">${withIcon('x', 'Sign out')}</button>`}</div>`).join('')
+            + (list.length > 1 ? `<p><button type="button" class="btn small ghost" data-kill-others>${withIcon('logout', 'Sign out all other devices')}</button></p>` : '');
+        } catch (err) { $('#sessions', form).innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
+      };
+      paintSessions();
+      $('#history', form).addEventListener('toggle', async (e) => {
+        if (!e.target.open || $('#hist', form).dataset.done) return;
+        try {
+          const h = await api('GET', '/api/auth/history');
+          $('#hist', form).dataset.done = '1';
+          $('#hist', form).innerHTML = h.length ? h.map((x) => `<div class="srow"><span>${x.ok ? pill('Signed in') : `<span class="pill fail">Failed</span>`} <small class="muted">${fmtDate(x.at)} · ${esc(x.ip || '')} · ${esc(browserOf(x.user_agent))}${x.reason ? ` · ${esc(x.reason)}` : ''}</small></span></div>`).join('') : '<p class="muted">Nothing yet.</p>';
+        } catch (err) { $('#hist', form).textContent = err.message; }
+      });
+      form.addEventListener('click', async (e) => {
+        try {
+          const kill = e.target.closest('[data-kill]');
+          if (kill) { await api('DELETE', `/api/auth/sessions/${kill.dataset.kill}`); toast('Signed out'); await paintSessions(); return; }
+          if (e.target.closest('[data-kill-others]')) { const r = await api('POST', '/api/auth/sessions/revoke-others', {}); toast(`Signed out ${r.count} other device${r.count === 1 ? '' : 's'}`); await paintSessions(); return; }
+        } catch (err) { fail(err); return; }
+        if (!e.target.closest('[data-signout]')) return;
+        await fetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        dlg.close();
+        location.hash = '#/';
+        renderAuth(false);
+      });
+    });
 }
 $('#me').onclick = openAccount;
 
@@ -894,7 +978,8 @@ async function viewUsers() {
     ${users.map((u) => `<tr><td>${esc(u.display_name)}</td><td class="muted">${esc(u.username)}</td><td class="muted">${esc(u.email || '—')}</td><td>${pill(u.role)}</td>
       <td>${u.active ? pill('Active') : pill('Inactive')}</td><td class="muted">${fmtDate(u.last_login)}</td>
       <td class="num"><button type="button" class="icon" data-act="edit" data-id="${u.id}" title="Edit ${esc(u.username)}" aria-label="Edit ${esc(u.username)}">${icon('pencil')}</button>
-        <button type="button" class="icon" data-act="reset" data-id="${u.id}" title="Reset password" aria-label="Reset password for ${esc(u.username)}">${icon('key')}</button></td></tr>`).join('')}
+        <button type="button" class="icon" data-act="reset" data-id="${u.id}" title="Reset password" aria-label="Reset password for ${esc(u.username)}">${icon('key')}</button>
+        <button type="button" class="icon" data-act="signout" data-id="${u.id}" title="Sign out everywhere" aria-label="Sign ${esc(u.username)} out everywhere">${icon('logout')}</button></td></tr>`).join('')}
     </tbody></table></section>
     <p class="muted">Users are deactivated, never deleted, so test runs and bugs keep showing who did what.</p>`;
   const done = async () => { await refreshUsers(); router(); };
@@ -902,6 +987,11 @@ async function viewUsers() {
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const u = users.find((x) => x.id === Number(b.dataset.id));
+    if (b.dataset.act === 'signout') {
+      if (!confirm(`Sign ${u.username} out of every device? They can sign in again with their password.`)) return;
+      api('POST', `/api/users/${u.id}/sign-out`, {}).then((r) => toast(`Ended ${r.count} session${r.count === 1 ? '' : 's'}`)).catch(fail);
+      return;
+    }
     if (b.dataset.act === 'add') {
       openDialog(`<h2>Add user</h2>
         <div class="two"><label>Username<input name="username" required maxlength="40" pattern="[A-Za-z0-9._\\-]{3,40}" autocomplete="off"></label><label>Name<input name="display_name" maxlength="80" autocomplete="off"></label></div>
@@ -969,6 +1059,7 @@ const ROUTES = [
   [/^#\/users$/, 'users', viewUsers],
   [/^#\/integrations$/, 'integrations', viewIntegrations],
   [/^#\/api-tokens$/, 'api-tokens', viewApiTokens],
+  [/^#\/audit$/, 'audit', viewAudit],
   [/^#\/notifications$/, 'notifications', viewNotifications],
   [/^#\/custom-fields$/, 'custom-fields', viewCustomFields],
   [/^#\/email-settings$/, 'email-settings', viewEmailSettings],
@@ -990,7 +1081,7 @@ async function router() {
   const hit = ROUTES.find(([re]) => re.test(hash));
   if (!hit) { view.innerHTML = '<p class="empty">Page not found.</p>'; return; }
   $$('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.nav === hit[1]));
-  if ((hit[1] === 'users' || hit[1] === 'integrations' || hit[1] === 'api-tokens' || hit[1] === 'email-settings' || hit[1] === 'custom-fields') && STATE.user.role !== 'admin') { view.innerHTML = '<p class="empty">Only admins can open this page.</p>'; return; }
+  if ((hit[1] === 'users' || hit[1] === 'integrations' || hit[1] === 'api-tokens' || hit[1] === 'email-settings' || hit[1] === 'custom-fields' || hit[1] === 'audit') && STATE.user.role !== 'admin') { view.innerHTML = '<p class="empty">Only admins can open this page.</p>'; return; }
   if (!STATE.pid) { view.innerHTML = '<p class="empty">Create a project to get started.</p>'; return; }
   try { await hit[2](hit[0].exec(hash)[1]); }
   catch (e) { view.innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
@@ -2166,7 +2257,7 @@ async function viewBug(id) {
   };
 }
 
-const NAV_ICONS = { dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail', 'custom-fields': 'sliders' };
+const NAV_ICONS = { dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail', 'custom-fields': 'sliders', audit: 'file' };
 $$('#nav a').forEach((a) => { a.innerHTML = withIcon(NAV_ICONS[a.dataset.nav], a.textContent); });
 $('#new-project').innerHTML = withIcon('plus', 'New project');
 

@@ -16,9 +16,12 @@ const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u
 function userFromRequest(req) {
   const token = tokenOf(req);
   if (!token) return null;
-  const u = ctx.q(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
+  const u = ctx.q(`SELECT u.*, s.last_seen_at AS _seen FROM sessions s JOIN users u ON u.id=s.user_id
     WHERE s.token_hash=? AND s.expires_at>? AND u.active=1`).get(sha(token), ctx.now());
-  return u ? { ...u, _sid: sha(token) } : null;
+  if (!u) return null;
+  const { _seen, ...user } = u;
+  if (!_seen || Date.now() - Date.parse(_seen) > 300000) ctx.q('UPDATE sessions SET last_seen_at=? WHERE token_hash=?').run(ctx.now(), sha(token));
+  return { ...user, _sid: sha(token) };
 }
 
 function startSession(req, userId) {
@@ -26,8 +29,8 @@ function startSession(req, userId) {
   const token = crypto.randomBytes(32).toString('base64url');
   const t = now();
   q('DELETE FROM sessions WHERE expires_at<=?').run(t);
-  q('INSERT INTO sessions(token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)')
-    .run(sha(token), userId, t, new Date(Date.now() + auth.SESSION_DAYS * 86400000).toISOString());
+  q('INSERT INTO sessions(token_hash, user_id, created_at, expires_at, ip, user_agent, last_seen_at) VALUES (?,?,?,?,?,?,?)')
+    .run(sha(token), userId, t, new Date(Date.now() + auth.SESSION_DAYS * 86400000).toISOString(), ctx.security.clientIp(req), String(req.headers['user-agent'] || '').slice(0, 200), t);
   return auth.sessionCookie(req, token);
 }
 
@@ -69,6 +72,7 @@ function install(c) {
       return Number(q('INSERT INTO users(username, display_name, password_hash, role, created_at, last_login) VALUES (?,?,?,?,?,?)')
         .run(v.username, v.display, hash, 'admin', now(), now()).lastInsertRowid);
     });
+    ctx.security.loginEvent(req, { username: v.username, userId: id, ok: true, reason: 'first-run setup' });
     return json({ user: publicUser(q('SELECT * FROM users WHERE id=?').get(id)) }, startSession(req, id));
   }, { public: true });
 
@@ -77,11 +81,16 @@ function install(c) {
     const password = str(body.password).slice(0, auth.MAX_PASSWORD + 1);
     const key = `${req.socket.remoteAddress}|${username.toLowerCase()}`;
     const wait = limiter.blocked(key);
-    if (wait) throw new HttpError(429, `Too many failed attempts. Try again in ${wait} seconds.`);
+    if (wait) { ctx.security.loginEvent(req, { username, ok: false, reason: 'blocked: too many attempts' }); throw new HttpError(429, `Too many failed attempts. Try again in ${wait} seconds.`); }
     const u = q('SELECT * FROM users WHERE username=?').get(username);
     const good = await auth.verifyPassword(password, u ? u.password_hash : await auth.dummyHash());
-    if (!u || !good || !u.active) { limiter.fail(key); throw new HttpError(401, 'Wrong username or password'); }
+    if (!u || !good || !u.active) {
+      limiter.fail(key);
+      ctx.security.loginEvent(req, { username, userId: u ? u.id : null, ok: false, reason: !u ? 'unknown user' : !good ? 'wrong password' : 'account is inactive' });
+      throw new HttpError(401, 'Wrong username or password');
+    }
     limiter.ok(key);
+    ctx.security.loginEvent(req, { username, userId: u.id, ok: true });
     q('UPDATE users SET last_login=? WHERE id=?').run(now(), u.id);
     return json({ user: publicUser(u) }, startSession(req, u.id));
   }, { public: true });

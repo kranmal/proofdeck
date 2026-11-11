@@ -441,3 +441,13 @@ body.viewer [data-act^="add-"], body.viewer [data-act^="del-"], body.viewer [dat
 .filtergrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 14px; align-items: end; }
 .filterbar p { margin: 8px 0 0; }
 .filters { margin: 0 0 12px; }
+
+/* ---------- activity, sessions ---------- */
+.pill.expired, .pill.failed { background: var(--fail-bg); color: var(--fail); }
+.pill.signed-in { background: var(--pass-bg); color: var(--pass); }
+.seg { display: inline-flex; gap: 6px; margin-right: 12px; }
+.center { text-align: center; padding: 10px 0; }
+.sessions .srow { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.sessions .srow:last-child { border-bottom: 0; }
+#history { margin: 10px 0; }
+#history summary { cursor: pointer; }
