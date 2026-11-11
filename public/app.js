@@ -40,6 +40,7 @@ const ICON_PATHS = {
   save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
   'arrow-left': '<path d="M19 12H5"/><path d="m12 5-7 7 7 7"/>',
   'arrow-right': '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  sliders: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
   rotate: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
@@ -59,8 +60,8 @@ const withIcon = (name, text) => `${icon(name)}<span>${text}</span>`;
 
 const STATE = { projects: [], pid: null, user: null, users: [] };
 // Test case list view state; survives navigating to a case and back.
-const CASES_UI = { folder: '', deep: true, term: '', collapsed: new Set(), sel: new Set() };
-const resetCasesUi = () => { Object.assign(CASES_UI, { folder: '', deep: true, term: '' }); CASES_UI.collapsed.clear(); CASES_UI.sel.clear(); };
+const CASES_UI = { folder: '', deep: true, term: '', status: '', collapsed: new Set(), sel: new Set() };
+const resetCasesUi = () => { Object.assign(CASES_UI, { folder: '', deep: true, term: '', status: '' }); CASES_UI.collapsed.clear(); CASES_UI.sel.clear(); };
 let pasteHandler = null;
 let keyHandler = null;
 
@@ -505,6 +506,68 @@ async function viewIntegrations() {
   };
 }
 
+// ---------- custom fields ----------
+function fieldInputs(defs, values = {}, prefix = 'cf') {
+  return defs.map((f) => {
+    const v = values[f.key] ?? '';
+    const id = `${prefix}-${f.key}`, req = f.required ? ' required' : '', label = `${esc(f.label)}${f.required ? ' *' : ''}`;
+    if (f.type === 'select') return `<label>${label}<select id="${id}" data-cf="${esc(f.key)}"${req}><option value=""></option>${f.options.map((o) => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
+    if (f.type === 'checkbox') return `<label class="check"><input type="checkbox" id="${id}" data-cf="${esc(f.key)}"${v === '1' ? ' checked' : ''}> ${label}</label>`;
+    return `<label>${label}<input id="${id}" data-cf="${esc(f.key)}" type="${f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}"${f.type === 'number' ? ' step="any"' : ''} value="${esc(v)}"${req} maxlength="1000"></label>`;
+  }).join('');
+}
+const readFields = (root, defs) => Object.fromEntries(defs.map((f) => {
+  const e = $(`[data-cf="${f.key}"]`, root);
+  return [f.key, e ? (f.type === 'checkbox' ? e.checked : e.value) : ''];
+}));
+
+async function viewCustomFields() {
+  const [defs, wf] = await Promise.all([api('GET', `/api/projects/${STATE.pid}/fields?all=1`), api('GET', `/api/projects/${STATE.pid}/workflow`)]);
+  const ENT = [['case', 'Test cases'], ['bug', 'Bugs'], ['cycle', 'Test cycles']];
+  const TYPE = { text: 'Text', number: 'Number', select: 'Choice', checkbox: 'Yes / no', date: 'Date' };
+  view.innerHTML = `
+    <header class="head"><h1>Fields &amp; workflow</h1></header>
+    <p class="meta">Extra fields appear on every test case, bug or cycle in this project. A field marked required must be filled in when the form is saved.</p>
+    ${ENT.map(([e, title]) => `<section class="card"><div class="chart-head"><h2>${title}</h2><button type="button" class="btn ghost small" data-act="add" data-entity="${e}">${withIcon('plus', 'Add field')}</button></div>
+      ${defs.filter((f) => f.entity === e).length ? `<div class="tscroll"><table><thead><tr><th>Name</th><th>Type</th><th>Options</th><th>Required</th><th></th></tr></thead><tbody>
+        ${defs.filter((f) => f.entity === e).map((f) => `<tr${f.archived ? ' class="revoked"' : ''}><td>${esc(f.label)} ${f.archived ? pill('Archived') : ''}</td><td>${TYPE[f.type]}</td><td class="muted">${esc(f.options.join(', '))}</td><td>${f.required ? 'Yes' : ''}</td>
+          <td class="num"><button type="button" class="icon small" data-act="edit" data-id="${f.id}" aria-label="Edit ${esc(f.label)}" title="Edit">${icon('pencil')}</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No extra fields yet.</p>'}</section>`).join('')}
+    <section class="card"><h2>Approval</h2>
+      <label class="check"><input type="checkbox" id="strict"${wf.strictApproval ? ' checked' : ''}> Test cases can only be approved through a review <small>(admins can still approve directly)</small></label></section>`;
+  const dialog = (f, entity) => openDialog(`<h2>${f ? 'Edit field' : 'Add a field'}</h2>
+    <label>Name<input name="label" required maxlength="60" value="${esc(f ? f.label : '')}" autofocus></label>
+    ${f ? '' : `<label>Type<select name="type">${Object.entries(TYPE).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>`}
+    <label id="opts"${f && f.type !== 'select' ? ' hidden' : f ? '' : ' hidden'}>Choices <small>One per line</small><textarea name="options" rows="4">${esc(f ? f.options.join('\n') : '')}</textarea></label>
+    <label class="check"><input type="checkbox" name="required"${f && f.required ? ' checked' : ''}> Required</label>
+    ${f ? `<label class="check"><input type="checkbox" name="archived"${f.archived ? ' checked' : ''}> Archived <small>(hidden everywhere, values are kept)</small></label>` : ''}
+    <footer>${f ? `<button type="button" class="btn danger" data-del>${withIcon('trash', 'Delete')}</button>` : ''}<span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Save</button></footer>`,
+    async (fd) => {
+      const body = { label: fd.get('label'), options: fd.get('options') || '', required: fd.get('required') === 'on' };
+      if (f) { await api('PUT', `/api/fields/${f.id}`, { ...body, archived: fd.get('archived') === 'on' }); } else { await api('POST', `/api/projects/${STATE.pid}/fields`, { ...body, entity, type: fd.get('type') }); }
+      router();
+    },
+    (form) => {
+      const sel = form.elements.type;
+      if (sel) sel.onchange = () => { $('#opts', form).hidden = sel.value !== 'select'; };
+      form.addEventListener('click', async (e) => {
+        if (!e.target.closest('[data-del]')) return;
+        if (!confirm(`Delete “${f.label}” and every value entered for it? Archive it instead to keep the values.`)) return;
+        await api('DELETE', `/api/fields/${f.id}`); dlg.close(); router();
+      });
+    });
+  view.onclick = (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    if (b.dataset.act === 'add') dialog(null, b.dataset.entity);
+    else dialog(defs.find((x) => x.id === Number(b.dataset.id)));
+  };
+  view.onchange = async (e) => {
+    if (e.target.id !== 'strict') return;
+    try { await api('PUT', `/api/projects/${STATE.pid}/workflow`, { strictApproval: e.target.checked }); toast(e.target.checked ? 'Approvals now go through a review' : 'Anyone who can edit may approve'); }
+    catch (err) { fail(err); e.target.checked = !e.target.checked; }
+  };
+}
+
 // ---------- notifications ----------
 let notifTimer = null;
 function setBadge(n) {
@@ -712,6 +775,7 @@ const forgotLine = () => (STATE.resetAvailable ? '<a href="#" id="forgot">Forgot
 
 function renderAuth(needsSetup, message = '') {
   stopNotifPolling();
+  resetCasesUi(); // the next person to sign in on this tab starts with clean filters
   STATE.user = null;
   $('#me').hidden = true;
   const a = $('#auth');
@@ -884,6 +948,7 @@ const ROUTES = [
   [/^#\/integrations$/, 'integrations', viewIntegrations],
   [/^#\/api-tokens$/, 'api-tokens', viewApiTokens],
   [/^#\/notifications$/, 'notifications', viewNotifications],
+  [/^#\/custom-fields$/, 'custom-fields', viewCustomFields],
   [/^#\/email-settings$/, 'email-settings', viewEmailSettings],
 ];
 
@@ -903,7 +968,7 @@ async function router() {
   const hit = ROUTES.find(([re]) => re.test(hash));
   if (!hit) { view.innerHTML = '<p class="empty">Page not found.</p>'; return; }
   $$('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.nav === hit[1]));
-  if ((hit[1] === 'users' || hit[1] === 'integrations' || hit[1] === 'api-tokens' || hit[1] === 'email-settings') && STATE.user.role !== 'admin') { view.innerHTML = '<p class="empty">Only admins can open this page.</p>'; return; }
+  if ((hit[1] === 'users' || hit[1] === 'integrations' || hit[1] === 'api-tokens' || hit[1] === 'email-settings' || hit[1] === 'custom-fields') && STATE.user.role !== 'admin') { view.innerHTML = '<p class="empty">Only admins can open this page.</p>'; return; }
   if (!STATE.pid) { view.innerHTML = '<p class="empty">Create a project to get started.</p>'; return; }
   try { await hit[2](hit[0].exec(hash)[1]); }
   catch (e) { view.innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
@@ -934,6 +999,7 @@ async function viewDashboard() {
       <div class="tile"><b>${rate}</b><span>Pass rate (${done} of ${t.total} executed)</span></div>
       <a class="tile" href="#/cycles"><b>${s.mine.runs}</b><span>Test runs assigned to you</span></a>
       <a class="tile" href="#/bugs"><b>${s.mine.bugs}</b><span>Open bugs assigned to you</span></a>
+      ${s.mine.reviews ? `<a class="tile" href="#/cases" data-review><b>${s.mine.reviews}</b><span>Test cases waiting for your review</span></a>` : ''}
     </section>
     <section class="card">
       <h2>Recent cycles</h2>
@@ -948,6 +1014,7 @@ async function viewDashboard() {
         <td>${pill(b.severity)}</td><td>${pill(b.status)}</td><td class="muted">${fmtDate(b.created_at)}</td></tr>`).join('')}</tbody></table>`
         : '<p class="empty">No bugs filed. Fail a step during a run and press “Create bug”.</p>'}
     </section>`;
+  view.onclick = (e) => { if (e.target.closest('[data-review]')) { CASES_UI.status = 'In Review'; CASES_UI.folder = ''; } };
 }
 
 // ---------- test cases ----------
@@ -1111,12 +1178,12 @@ async function viewCases() {
   await load();
   const visible = () => {
     const t = U.term.toLowerCase();
-    return cases.filter((c) => inFolder(c.folder, U.folder, U.deep) && (!t || `${c.key} ${c.title} ${c.labels} ${c.refs || ''} ${c.automation_key || ''}`.toLowerCase().includes(t)));
+    return cases.filter((c) => inFolder(c.folder, U.folder, U.deep) && (!U.status || c.status === U.status) && (!t || `${c.key} ${c.title} ${c.labels} ${c.refs || ''} ${c.automation_key || ''}`.toLowerCase().includes(t)));
   };
   const row = (c) => `<tr draggable="true" data-id="${c.id}"${U.sel.has(c.id) ? ' class="picked"' : ''}>
     <td class="cb"><input type="checkbox" data-sel="${c.id}"${U.sel.has(c.id) ? ' checked' : ''} aria-label="Select ${esc(c.key)}"></td>
     <td><a href="#/cases/${c.id}"><span class="key">${esc(c.key)}</span> ${esc(c.title)}</a>${c.automation_key ? ` <span class="chip ext auto" title="Automation key: ${esc(c.automation_key)}">Automated</span>` : ''}</td>
-    <td>${esc(c.folder)}</td><td>${pill(c.priority)}</td><td>${pill(c.status)}</td><td class="num">${c.step_count}</td>
+    <td>${esc(c.folder)}</td><td>${pill(c.priority)}</td><td>${pill(c.status)}</td><td class="num">${c.script_type === 'bdd' ? 'Gherkin' : c.step_count}</td>
     <td>${c.last_status ? pill(c.last_status) : '<span class="muted">Never run</span>'}</td>
     <td class="num">${c.open_bugs || ''}</td>
     <td class="num"><button type="button" class="btn small ghost" data-act="run" data-id="${c.id}" title="Run this test case on its own">${withIcon('play', 'Run')}</button></td></tr>`;
@@ -1131,7 +1198,8 @@ async function viewCases() {
       <section class="cases-pane">
         <div class="fbar" id="fbar"></div>
         <div class="filters"><input type="search" id="q" placeholder="Search by key, title, label or requirement" aria-label="Search test cases">
-          <label class="check"><input type="checkbox" id="deep"> Include subfolders</label></div>
+          <label class="check"><input type="checkbox" id="deep"> Include subfolders</label>
+          <select id="status-filter" aria-label="Status"><option value="">Any status</option>${['Draft', 'In Review', 'Approved', 'Deprecated'].map((s) => `<option>${s}</option>`).join('')}</select></div>
         <div class="bulk" id="bulk" hidden></div>
         <section class="card flush"><table><thead><tr><th class="cb"><input type="checkbox" id="sel-all" aria-label="Select all shown"></th><th>Test case</th><th>Folder</th><th>Priority</th><th>Status</th><th class="num">Steps</th><th>Last result</th><th class="num">Open bugs</th><th></th></tr></thead>
         <tbody id="rows"></tbody></table></section>
@@ -1139,6 +1207,7 @@ async function viewCases() {
     </div>`;
   $('#q').value = U.term;
   $('#deep').checked = U.deep;
+  $('#status-filter').value = U.status;
 
   const paint = () => {
     const list = visible();
@@ -1223,6 +1292,7 @@ async function viewCases() {
   view.onchange = (e) => {
     const t = e.target;
     if (t.id === 'deep') { U.deep = t.checked; paint(); }
+    else if (t.id === 'status-filter') { U.status = t.value; paint(); }
     else if (t.id === 'sel-all') { for (const c of visible()) { if (t.checked) U.sel.add(c.id); else U.sel.delete(c.id); } paint(); }
     else if (t.matches('[data-sel]')) { const id = Number(t.dataset.sel); if (t.checked) U.sel.add(id); else U.sel.delete(id); paint(); }
   };
@@ -1266,12 +1336,27 @@ async function viewCaseEdit(id) {
   const folders = await api('GET', `/api/projects/${STATE.pid}/folders`);
   const history = isNew ? [] : await api('GET', `/api/cases/${id}/versions`);
   const allCases = (await api('GET', `/api/projects/${STATE.pid}/cases`)).filter((x) => String(x.id) !== String(id));
+  const cfDefs = await api('GET', `/api/projects/${STATE.pid}/fields?entity=case`);
   const c = isNew
-    ? { title: '', objective: '', precondition: '', priority: 'Medium', status: 'Draft', folder: CASES_UI.folder, labels: '', steps: [{}], bugs: [], runs: [], usedBy: [], links: [], params: { columns: [], rows: [] } }
+    ? { title: '', objective: '', precondition: '', priority: 'Medium', status: 'Draft', folder: CASES_UI.folder, labels: '', steps: [{}], bugs: [], runs: [], usedBy: [], links: [], fields: {}, script_type: 'steps', bdd_script: '', params: { columns: [], rows: [] } }
     : await api('GET', `/api/cases/${id}`);
   let steps = c.steps.length ? c.steps.map((s) => ({ ...s })) : [{}];
   let params = { columns: [...c.params.columns], rows: c.params.rows.map((r) => [...r]) };
   let links = c.links.map((l) => ({ ...l }));
+  let scriptType = c.script_type || 'steps';
+  const me = STATE.user;
+  const reviewBanner = () => {
+    if (isNew) return '';
+    if (c.status === 'In Review') {
+      const decide = me.id === c.reviewer_id || me.role === 'admin';
+      return `<section class="card banner"><p><b>In review</b> by ${esc(c.reviewer_name || 'someone')}${c.review_note ? ` · “${esc(c.review_note)}”` : ''}</p>
+        <p class="rowbtns">${decide ? `<button type="button" class="btn primary small" data-act="approve">${withIcon('check', 'Approve')}</button> <button type="button" class="btn ghost small" data-act="reject">${withIcon('x', 'Request changes')}</button>` : '<span class="muted">Waiting for the reviewer.</span>'}
+        ${me.id === c.review_requested_by || me.role === 'admin' ? `<button type="button" class="btn ghost small" data-act="withdraw">Withdraw</button>` : ''}</p></section>`;
+    }
+    if (c.status === 'Approved' && c.approved_by_name) return `<section class="card banner ok"><p><b>Approved</b> by ${esc(c.approved_by_name)} on ${fmtDate(c.approved_at)}${c.review_note ? ` · “${esc(c.review_note)}”` : ''}</p></section>`;
+    if (c.status === 'Draft' && c.review_note) return `<section class="card banner warnbox"><p><b>Changes were requested:</b> ${esc(c.review_note)}</p></section>`;
+    return '';
+  };
   const linksHtml = () => (links.length ? `<p class="links">${links.map((l, i) => `<span class="chip ext">${l.href ? `<a href="${esc(safeUrl(l.href))}" target="_blank" rel="noopener noreferrer">${icon('link')}<span>${esc(l.ref)}</span></a>` : `${icon('link')}<span>${esc(l.ref)}</span>`}${l.title ? `<small>${esc(l.title)}</small>` : ''}<button type="button" class="x" data-act="del-link" data-i="${i}" aria-label="Remove ${esc(l.ref)}" title="Remove">${icon('x')}</button></span>`).join('')}</p>` : '<p class="muted">Not linked to any requirement yet.</p>');
 
   const toolButtons = (i) => `<span class="tools">
@@ -1308,8 +1393,9 @@ async function viewCaseEdit(id) {
 
   view.innerHTML = `
     <header class="head"><h1>${isNew ? 'New test case' : `<span class="key">${esc(c.key)}</span> Edit test case`}</h1>
-      <span>${isNew ? '' : `<button class="btn danger" data-act="delete">${withIcon('trash', 'Delete')}</button> <button class="btn ghost" data-act="clone">${withIcon('copy', 'Clone')}</button> <button class="btn ghost" data-act="run" title="Run the last saved version on its own">${withIcon('play', 'Run')}</button>`}
+      <span>${isNew ? '' : `<button class="btn danger" data-act="delete">${withIcon('trash', 'Delete')}</button> ${c.status === 'Draft' ? `<button class="btn ghost" data-act="request-review">${withIcon('check', 'Request review')}</button> ` : ''}<button class="btn ghost" data-act="clone">${withIcon('copy', 'Clone')}</button> <button class="btn ghost" data-act="run" title="Run the last saved version on its own">${withIcon('play', 'Run')}</button>`}
       <a class="btn ghost" href="#/cases">Cancel</a> <button class="btn primary" data-act="save">${withIcon('save', 'Save')}</button></span></header>
+    ${reviewBanner()}
     ${isNew ? '' : `<p class="meta">Version ${c.version}${c.updated_by_name ? ` · last edited by ${esc(c.updated_by_name)}` : ''} on ${fmtDate(c.updated_at)}${c.created_by_name ? ` · created by ${esc(c.created_by_name)}` : ''}</p>`}
     <section class="card form">
       <label class="wide">Title<input id="f-title" value="${esc(c.title)}" maxlength="200" required></label>
@@ -1317,23 +1403,31 @@ async function viewCaseEdit(id) {
       <label>Labels<input id="f-labels" value="${esc(c.labels)}" placeholder="comma separated"></label>
       <label>Automation key<small>How a CI test is matched to this case</small><input id="f-automation_key" value="${esc(c.automation_key)}" placeholder="e.g. tests/login.spec.ts::signs in" maxlength="300" autocomplete="off" spellcheck="false"></label>
       <label>Priority<select id="f-priority">${options(['High', 'Medium', 'Low'], c.priority)}</select></label>
-      <label>Status<select id="f-status">${options(['Draft', 'Approved', 'Deprecated'], c.status)}</select></label>
+      <label>Status<select id="f-status">${options(['Draft', 'In Review', 'Approved', 'Deprecated'], c.status)}</select></label>
       <label class="wide">Objective<textarea id="f-objective" rows="2">${esc(c.objective)}</textarea></label>
       <label class="wide">Preconditions<textarea id="f-precondition" rows="2">${esc(c.precondition)}</textarea></label>
     </section>
-    <section class="card">
-      <h2>Steps</h2>
+    ${cfDefs.length ? `<section class="card form" id="cf-card">${fieldInputs(cfDefs, c.fields, 'cf')}</section>` : ''}
+    <section class="card" id="steps-card">
+      <div class="chart-head"><h2>Test script</h2><div class="seg-toggle" role="group" aria-label="Script type"><button type="button" data-script="steps" aria-pressed="${scriptType === 'steps'}">Step by step</button><button type="button" data-script="bdd" aria-pressed="${scriptType === 'bdd'}">Gherkin (BDD)</button></div></div>
+      <div id="bdd-box"${scriptType === 'bdd' ? '' : ' hidden'}>
+        <p class="muted">One scenario per test case. Each Given / When / Then / And line becomes a step to execute. A <code>Scenario Outline</code> with an <code>Examples</code> table becomes the data sets.</p>
+        <textarea id="f-bdd" class="mono" rows="14" spellcheck="false" placeholder="Feature: Login&#10;  Scenario: Sign in&#10;    Given a registered user&#10;    When they sign in with the right password&#10;    Then they see their dashboard">${esc(c.bdd_script || '')}</textarea>
+        ${c.script_type === 'bdd' && c.bdd_steps ? `<h3>Steps as they will be run</h3><ol class="bddsteps">${c.bdd_steps.map((s) => `<li><span class="pre">${esc(s.action)}</span></li>`).join('')}</ol>${c.bdd_examples ? `<p class="muted">${c.bdd_examples.rows.length} example row${c.bdd_examples.rows.length === 1 ? '' : 's'} = ${c.bdd_examples.rows.length} run${c.bdd_examples.rows.length === 1 ? '' : 's'}</p>` : ''}` : ''}
+      </div>
+      <div id="steps-box"${scriptType === 'steps' ? '' : ' hidden'}>
       <div class="steprow hdr"><span></span><b>Action</b><b>Test data</b><b>Expected result</b><span></span></div>
       <div id="steps">${stepRows()}</div>
       <p class="rowbtns"><button type="button" class="btn ghost" data-act="add">${withIcon('plus', 'Add step')}</button>
         <button type="button" class="btn ghost" data-act="add-call">${withIcon('link', 'Call another test case')}</button></p>
+      </div>
     </section>
     <section class="card"><h2>Requirements covered</h2>
       <p class="muted">Link this test case to the requirements it verifies: a Jira key such as PROJ-123, #45 for a GitHub issue, or any name. Reports show which requirements are covered and how they last ran.</p>
       <div id="links">${linksHtml()}</div>
       <div class="addlink"><input id="l-ref" placeholder="PROJ-123" maxlength="100" aria-label="Requirement key or name"><input id="l-title" placeholder="Title (optional)" maxlength="200" aria-label="Requirement title">
         <input id="l-url" placeholder="Link (optional, https://…)" maxlength="500" aria-label="Requirement link"><button type="button" class="btn ghost" data-act="add-link">${withIcon('plus', 'Add')}</button></div></section>
-    <section class="card"><h2>Data sets</h2><div id="params">${paramsHtml()}</div></section>
+    <section class="card" id="params-card"${scriptType === 'bdd' ? ' hidden' : ''}><h2>Data sets</h2><div id="params">${paramsHtml()}</div></section>
     ${c.usedBy.length ? `<section class="card"><h2>Used by</h2><p class="muted">These test cases call this one, so changes here apply to their future runs.</p><p>${c.usedBy.map((u) => `<a class="chip ext" href="#/cases/${u.id}"><span>${esc(u.key)} ${esc(u.title)}</span></a>`).join(' ')}</p></section>` : ''}
     ${c.bugs.length ? `<section class="card"><h2>Bugs found by this test</h2><table><tbody>${c.bugs.map((b) => `<tr>
       <td><a href="#/bugs/${b.id}"><span class="key">${esc(b.key)}</span> ${esc(b.title)}</a></td><td>${pill(b.severity)}</td><td>${pill(b.status)}</td></tr>`).join('')}</tbody></table></section>` : ''}
@@ -1350,13 +1444,31 @@ async function viewCaseEdit(id) {
     if (e.key === 'Enter' && e.target.closest('.addlink')) { e.preventDefault(); $('[data-act=add-link]').click(); }
   };
   view.onclick = async (e) => {
-    const b = e.target.closest('[data-act]');
+    const b = e.target.closest('[data-act], [data-script]');
     if (!b) return;
     const act = b.dataset.act;
     const row = b.closest('.steprow');
     const i = row ? Number(row.dataset.i) : -1;
     try {
-      if (act === 'add-link') {
+      if (act === 'request-review') {
+        openDialog(`<h2>Request review</h2><p class="muted">The reviewer is notified and can approve ${esc(c.key)} or ask for changes.</p>
+          <label>Reviewer<select name="reviewer_id" required><option value="">Choose…</option>${STATE.users.filter((u) => u.id !== me.id).map((u) => `<option value="${u.id}">${esc(u.display_name)}</option>`).join('')}</select></label>
+          <label>Note for the reviewer <small>(optional)</small><textarea name="note" rows="3" maxlength="2000"></textarea></label>
+          <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Send for review</button></footer>`,
+          async (fd) => { await api('POST', `/api/cases/${id}/review`, { action: 'request', reviewer_id: Number(fd.get('reviewer_id')), note: fd.get('note') }); toast('Sent for review'); router(); });
+      } else if (act === 'approve' || act === 'reject') {
+        const ok = act === 'approve';
+        openDialog(`<h2>${ok ? 'Approve' : 'Request changes to'} ${esc(c.key)}</h2>
+          <label>${ok ? 'Note <small>(optional)</small>' : 'What needs to change?'}<textarea name="note" rows="4" maxlength="2000"${ok ? '' : ' required'}></textarea></label>
+          <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">${ok ? 'Approve' : 'Send back to the author'}</button></footer>`,
+          async (fd) => { await api('POST', `/api/cases/${id}/review`, { action: act, note: fd.get('note') }); toast(ok ? 'Approved' : 'Sent back for changes'); router(); });
+      } else if (act === 'withdraw') {
+        await api('POST', `/api/cases/${id}/review`, { action: 'withdraw' }); toast('Review withdrawn'); router();
+      } else if (b.dataset.script) {
+        scriptType = b.dataset.script;
+        $$('[data-script]', view).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+        $('#bdd-box').hidden = scriptType !== 'bdd'; $('#steps-box').hidden = scriptType !== 'steps'; $('#params-card').hidden = scriptType === 'bdd';
+      } else if (act === 'add-link') {
         const ref = $('#l-ref').value.trim();
         if (!ref) { $('#l-ref').focus(); return; }
         if (!links.some((l) => l.ref.toLowerCase() === ref.toLowerCase())) links.push({ ref, title: $('#l-title').value.trim(), url: $('#l-url').value.trim(), href: $('#l-url').value.trim() });
@@ -1403,7 +1515,7 @@ async function viewCaseEdit(id) {
         sync();
         syncParams();
         if (steps.some((s) => s.call_case_id === 0)) throw new Error('Choose which test case each “call” step should run');
-        const body = { steps, params: params.columns.length ? params : null, links: links.map(({ ref, title, url }) => ({ ref, title, url })) };
+        const body = { script_type: scriptType, bdd_script: $('#f-bdd').value, ...(cfDefs.length ? { fields: readFields(view, cfDefs) } : {}), steps, params: params.columns.length ? params : null, links: links.map(({ ref, title, url }) => ({ ref, title, url })) };
         for (const f of ['title', 'folder', 'labels', 'automation_key', 'priority', 'status', 'objective', 'precondition']) body[f] = $(`#f-${f}`).value;
         if (!body.title.trim()) { $('#f-title').focus(); throw new Error('Title is required'); }
         if (isNew) await api('POST', `/api/projects/${STATE.pid}/cases`, body);
@@ -1473,16 +1585,18 @@ const wirePicker = (form) => { form.onchange = (e) => { if (e.target.matches('[d
 async function openNewCycle({ planId = null } = {}) {
   const [all, plans] = await Promise.all([api('GET', `/api/projects/${STATE.pid}/cases`), planId ? [] : api('GET', `/api/projects/${STATE.pid}/plans`)]);
   const cases = all.filter((c) => c.status !== 'Deprecated');
+  const cyDefs = await api('GET', `/api/projects/${STATE.pid}/fields?entity=cycle`);
   openDialog(`<h2>New test cycle</h2>
     <label>Name<input name="name" required maxlength="120" placeholder="e.g. Release 2.3 regression" autofocus></label>
     <div class="two"><label>Environment<input name="environment" placeholder="Staging · Chrome"></label><label>Build / version<input name="build" placeholder="2.3.0-rc1"></label></div>
     ${planId ? '' : `<label>Test plan<select name="plan_id"><option value="">No plan</option>${plans.map((p) => `<option value="${p.id}">${esc(p.key)} ${esc(p.name)}</option>`).join('')}</select></label>`}
+    ${cyDefs.length ? `<div class="form">${fieldInputs(cyDefs, {}, 'cy')}</div>` : ''}
     <h3>Test cases</h3>${casePicker(cases)}
     <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Create cycle</button></footer>`,
     async (fd) => {
       const r = await api('POST', `/api/projects/${STATE.pid}/cycles`, {
         name: fd.get('name'), environment: fd.get('environment'), build: fd.get('build'),
-        plan_id: planId || (fd.get('plan_id') ? Number(fd.get('plan_id')) : null), caseIds: fd.getAll('case').map(Number),
+        plan_id: planId || (fd.get('plan_id') ? Number(fd.get('plan_id')) : null), caseIds: fd.getAll('case').map(Number), ...(cyDefs.length ? { fields: readFields(dlg, cyDefs) } : {}),
       });
       location.hash = `#/cycles/${r.id}`;
     }, wirePicker);
@@ -1603,12 +1717,14 @@ async function viewCycle(id) {
         location.hash = '#/cycles';
       } else if (act === 'edit') {
         const plans = await api('GET', `/api/projects/${STATE.pid}/plans`);
+        const cyDefs = await api('GET', `/api/projects/${STATE.pid}/fields?entity=cycle`);
         openDialog(`<h2>Edit ${esc(c.key)}</h2>
           <label>Name<input name="name" required maxlength="200" value="${esc(c.name)}"></label>
           <div class="two"><label>Environment<input name="environment" value="${esc(c.environment)}"></label><label>Build / version<input name="build" value="${esc(c.build)}"></label></div>
           <label>Test plan<select name="plan_id"><option value="">No plan</option>${plans.map((p) => `<option value="${p.id}"${p.id === c.plan_id ? ' selected' : ''}>${esc(p.key)} ${esc(p.name)}</option>`).join('')}</select></label>
+          ${cyDefs.length ? `<div class="form">${fieldInputs(cyDefs, c.fields, 'cy')}</div>` : ''}
           <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Save</button></footer>`,
-          async (fd) => { await api('PUT', `/api/cycles/${id}`, { name: fd.get('name'), environment: fd.get('environment'), build: fd.get('build'), plan_id: fd.get('plan_id') ? Number(fd.get('plan_id')) : null }); toast('Cycle saved'); router(); });
+          async (fd) => { await api('PUT', `/api/cycles/${id}`, { name: fd.get('name'), environment: fd.get('environment'), build: fd.get('build'), plan_id: fd.get('plan_id') ? Number(fd.get('plan_id')) : null, ...(cyDefs.length ? { fields: readFields(dlg, cyDefs) } : {}) }); toast('Cycle saved'); router(); });
       } else if (act === 'export') {
         openExport({ title: `Export results of ${c.key}`, base: `/api/cycles/${id}/export`, note: 'One row per step with its status, actual result and linked bugs.' });
       } else if (act === 'clone') {
@@ -1876,8 +1992,9 @@ function bugMarkdown(b) {
 async function viewBug(id) {
   let b = await api('GET', `/api/bugs/${id}`);
   const integrations = await api('GET', `/api/projects/${b.project_id}/integrations`);
+  const bugDefs = await api('GET', `/api/projects/${b.project_id}/fields?entity=bug`);
   const FIELDS = ['title', 'status', 'severity', 'priority', 'environment', 'steps_to_reproduce', 'expected', 'actual'];
-  const read = () => ({ ...Object.fromEntries(FIELDS.map((f) => [f, $(`#b-${f}`).value])), assignee_id: $('#b-assignee_id').value ? Number($('#b-assignee_id').value) : null });
+  const read = () => ({ ...Object.fromEntries(FIELDS.map((f) => [f, $(`#b-${f}`).value])), assignee_id: $('#b-assignee_id').value ? Number($('#b-assignee_id').value) : null, fields: bugDefs.length ? readFields(view, bugDefs) : undefined });
   const render = () => {
     view.innerHTML = `
       <header class="head"><h1><span class="key">${esc(b.key)}</span> Bug</h1>
@@ -1895,6 +2012,7 @@ async function viewBug(id) {
         <label>Priority<select id="b-priority">${options(['High', 'Medium', 'Low'], b.priority)}</select></label>
         <label>Assignee${userSelect('id="b-assignee_id"', b.assignee_id, b.assignee_name)}</label>
         <label class="wide">Environment<input id="b-environment" value="${esc(b.environment)}"></label>
+        ${fieldInputs(bugDefs, b.fields, 'bf')}
         <label class="wide">Steps to reproduce<textarea id="b-steps_to_reproduce" rows="7" placeholder="1. …">${esc(b.steps_to_reproduce)}</textarea></label>
         <label>Expected result<textarea id="b-expected" rows="5">${esc(b.expected)}</textarea></label>
         <label>Actual result<textarea id="b-actual" rows="5">${esc(b.actual)}</textarea></label>
@@ -1961,7 +2079,7 @@ async function viewBug(id) {
   };
 }
 
-const NAV_ICONS = { dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail' };
+const NAV_ICONS = { dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail', 'custom-fields': 'sliders' };
 $$('#nav a').forEach((a) => { a.innerHTML = withIcon(NAV_ICONS[a.dataset.nav], a.textContent); });
 $('#new-project').innerHTML = withIcon('plus', 'New project');
 

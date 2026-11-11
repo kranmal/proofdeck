@@ -256,6 +256,15 @@ label.radio input { width: auto; margin: 0; }
   .card { overflow-x: auto; }
 }
 
+/* ---------- review, Gherkin ---------- */
+.banner { border-left: 4px solid var(--progress); }
+.banner.ok { border-left-color: var(--pass); }
+.banner.warnbox { border-left-color: var(--blocked); }
+.banner p { margin: 0 0 6px; }
+.mono { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; tab-size: 2; }
+.bddsteps { margin: 6px 0 10px; padding-left: 22px; }
+.bddsteps .pre { margin: 0; }
+
 /* ---------- notifications ---------- */
 .badge { margin-left: auto; min-width: 22px; padding: 0 7px; border-radius: 999px; background: var(--fail); color: #fff; font-size: 12px; font-weight: 700; text-align: center; line-height: 20px; }
 .notifs { list-style: none; margin: 0; padding: 0; }

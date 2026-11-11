@@ -47,7 +47,7 @@ function looksLike(type, b) {
 const STEP_STATUS = ['Not Executed', 'Pass', 'Fail', 'Blocked'];
 const EXEC_STATUS = ['Not Executed', 'In Progress', 'Pass', 'Fail', 'Blocked'];
 const ENUMS = {
-  cases: { priority: ['High', 'Medium', 'Low'], status: ['Draft', 'Approved', 'Deprecated'] },
+  cases: { priority: ['High', 'Medium', 'Low'], status: ['Draft', 'In Review', 'Approved', 'Deprecated'], script_type: ['steps', 'bdd'] },
   bugs: {
     status: ['Open', 'In Progress', 'Resolved', 'Closed'],
     severity: ['Critical', 'Major', 'Minor', 'Trivial'],
@@ -209,6 +209,13 @@ addColumn('executions', 'run_id', "TEXT NOT NULL DEFAULT ''");
 addColumn('step_results', 'origin', "TEXT NOT NULL DEFAULT ''");
 // Automation key: how a CI test or script is matched to its test case. Unique per project when set.
 addColumn('cases', 'automation_key', "TEXT NOT NULL DEFAULT ''");
+addColumn('cases', 'script_type', "TEXT NOT NULL DEFAULT 'steps'"); // steps | bdd (Gherkin)
+addColumn('cases', 'bdd_script', "TEXT NOT NULL DEFAULT ''");
+addColumn('cases', 'reviewer_id', USER_REF);
+addColumn('cases', 'review_requested_by', USER_REF);
+addColumn('cases', 'review_note', "TEXT NOT NULL DEFAULT ''");
+addColumn('cases', 'approved_by', USER_REF);
+addColumn('cases', 'approved_at', 'TEXT');
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_case_autokey ON cases(project_id, automation_key) WHERE automation_key != ''");
 addColumn('executions', 'case_version', 'INTEGER');
 
@@ -301,6 +308,8 @@ function replaceSteps(caseId, steps) {
 // The steps a run executes: call steps are replaced by the called case's steps (recursively), tagged with its key.
 function expandSteps(caseId, depth = 0, origin = '') {
   const out = [];
+  const own = q('SELECT script_type, bdd_script FROM cases WHERE id=?').get(caseId);
+  if (own && own.script_type === 'bdd') return gherkin.gherkinSteps(gherkin.parseGherkin(own.bdd_script)).map((s) => ({ ...s, origin }));
   for (const s of q('SELECT * FROM steps WHERE case_id=? ORDER BY position').all(caseId)) {
     if (s.call_case_id) {
       const t = q('SELECT key FROM cases WHERE id=?').get(s.call_case_id);
@@ -343,8 +352,30 @@ function parseParams(text) {
 const versions = require('./lib/versions')({ q, now, str, normFolder, replaceSteps, checkEnum, HttpError });
 const links = require('./lib/links')({ q, str, HttpError });
 const syncHooks = { statusChanged() {} }; // set by routes/sync.js
+const gherkin = require('./lib/gherkin');
+const fieldsApi = { read: () => ({}), save() {}, copy() {}, remove() {} }; // set by routes/fields.js
 const notifier = require('./lib/notify')({ q, now, str });
 versions.backfill();
+
+// Projects can require that approval goes through a review (admins may still approve directly).
+function assertMayApprove(projectId, from, to, user) {
+  if (to === 'Approved' && from !== 'Approved' && user.role !== 'admin' && ctx.strictApproval && ctx.strictApproval(projectId)) {
+    throw new HttpError(403, 'In this project a test case is approved through a review. Use “Request review” instead.');
+  }
+}
+
+// Gherkin cases keep their script as text; it must parse, so mistakes are caught when it is saved, not when it is run.
+function saveScript(caseId, d) {
+  const cur = q('SELECT script_type, bdd_script FROM cases WHERE id=?').get(caseId);
+  const type = d.script_type !== undefined ? str(d.script_type) : cur.script_type;
+  const script = d.bdd_script !== undefined ? str(d.bdd_script).slice(0, 20000) : cur.bdd_script;
+  checkEnum('cases', 'script_type', type);
+  if (type === 'bdd') {
+    const g = gherkin.parseGherkin(script);
+    if (g.errors.length) throw new HttpError(400, `The Gherkin script has a problem: ${g.errors[0]}`, { errors: g.errors });
+  }
+  q('UPDATE cases SET script_type=?, bdd_script=? WHERE id=?').run(type, script, caseId);
+}
 
 function insertCase(projectId, d, userId = null) {
   const priority = str(d.priority, 'Medium'), status = str(d.status, 'Draft');
@@ -356,7 +387,9 @@ function insertCase(projectId, d, userId = null) {
     normFolder(d.folder), str(d.labels).trim(), t, t, userId, userId, cleanParams(d.params)).lastInsertRowid);
   replaceSteps(id, d.steps);
   if (d.links !== undefined) links.replaceLinks(id, d.links);
+  if (d.fields !== undefined) fieldsApi.save(projectId, 'case', id, d.fields);
   if (str(d.automation_key).trim()) setAutomationKey(id, projectId, d.automation_key);
+  if (d.script_type !== undefined || d.bdd_script !== undefined) saveScript(id, d);
   versions.recordVersion(id, userId);
   return { id, key };
 }
@@ -364,7 +397,8 @@ function insertCase(projectId, d, userId = null) {
 // Freeze a case (title, preconditions, steps) into a new execution of the given cycle.
 function snapshotCase(cycleId, c, { rows = null } = {}) {
   const steps = expandSteps(c.id);
-  const data = parseParams(c.params);
+  let data = parseParams(c.params);
+  if (c.script_type === 'bdd' && !data.columns.length) { const g = gherkin.parseGherkin(c.bdd_script); if (g.examples) data = g.examples; } // a Scenario Outline brings its own data
   const iterations = data.columns.length && data.rows.length ? (rows || data.rows.map((_, i) => i)) : [null];
   const runId = crypto.randomBytes(6).toString('hex');
   const insExec = q('INSERT INTO executions(cycle_id, case_id, case_key, case_title, precondition, case_version, iteration, iteration_label, run_id) VALUES (?,?,?,?,?,?,?,?,?)');
@@ -473,6 +507,7 @@ route('GET', '/api/projects/:pid/summary', ({ params, user }) => {
       bugs: q("SELECT COUNT(*) n FROM bugs WHERE project_id=? AND assignee_id=? AND status IN ('Open','In Progress')").get(pid, user.id).n,
       runs: q(`SELECT COUNT(*) n FROM executions e JOIN cycles c ON c.id=e.cycle_id
         WHERE c.project_id=? AND c.adhoc=0 AND e.assignee_id=? AND e.status IN ('Not Executed','In Progress')`).get(pid, user.id).n,
+      reviews: q("SELECT COUNT(*) n FROM cases WHERE project_id=? AND status='In Review' AND reviewer_id=?").get(pid, user.id).n,
     },
   };
 });
@@ -480,7 +515,7 @@ route('GET', '/api/projects/:pid/summary', ({ params, user }) => {
 // --- test cases ---
 route('GET', '/api/projects/:pid/cases', ({ params }) =>
   q(`SELECT c.id, c.key, c.title, c.priority, c.status, c.folder, c.labels, c.updated_at, c.automation_key,
-      (SELECT COUNT(*) FROM steps s WHERE s.case_id=c.id) AS step_count,
+      (SELECT COUNT(*) FROM steps s WHERE s.case_id=c.id) AS step_count, c.script_type, c.reviewer_id,
       (SELECT e.status FROM executions e WHERE e.case_id=c.id AND e.executed_at IS NOT NULL
          ORDER BY e.executed_at DESC LIMIT 1) AS last_status,
       (SELECT COUNT(*) FROM bugs b WHERE b.case_id=c.id AND b.status IN ('Open','In Progress')) AS open_bugs,
@@ -490,6 +525,7 @@ route('GET', '/api/projects/:pid/cases', ({ params }) =>
 route('POST', '/api/projects/:pid/cases', ({ params, body, user }) => {
   const title = str(body.title).trim();
   if (!title) throw new HttpError(400, 'Title is required');
+  assertMayApprove(Number(params.pid), 'Draft', str(body.status, 'Draft'), user);
   return tx(() => insertCase(params.pid, body, user.id));
 });
 
@@ -577,6 +613,10 @@ route('GET', '/api/cases/:id', ({ params }) => {
     FROM steps s WHERE s.case_id=? ORDER BY s.position`).all(c.id);
   c.params = parseParams(c.params);
   c.links = links.linksOf(c);
+  c.fields = fieldsApi.read('case', c.id);
+  if (c.script_type === 'bdd') { const g = gherkin.parseGherkin(c.bdd_script); c.bdd_steps = gherkin.gherkinSteps(g); c.bdd_examples = g.examples; c.bdd_errors = g.errors; }
+  c.reviewer_name = c.reviewer_id ? (q('SELECT display_name FROM users WHERE id=?').get(c.reviewer_id) || {}).display_name || '' : '';
+  c.approved_by_name = c.approved_by ? (q('SELECT display_name FROM users WHERE id=?').get(c.approved_by) || {}).display_name || '' : '';
   c.usedBy = q('SELECT DISTINCT c2.id, c2.key, c2.title FROM steps s JOIN cases c2 ON c2.id=s.case_id WHERE s.call_case_id=? ORDER BY c2.id').all(c.id);
   c.bugs = q('SELECT id, key, title, status, severity FROM bugs WHERE case_id=? ORDER BY id DESC').all(c.id);
   c.runs = q(`SELECT e.id, e.status, e.executed_at, cy.key AS cycle_key, cy.name AS cycle_name, cy.adhoc
@@ -600,15 +640,18 @@ route('POST', '/api/cases/:id/run', ({ params, user }) => {
 });
 
 route('PUT', '/api/cases/:id', ({ params, body, user }) => {
-  need(q('SELECT 1 FROM cases WHERE id=?').get(params.id), 'Test case');
+  const existingCase = need(q('SELECT project_id, status FROM cases WHERE id=?').get(params.id), 'Test case');
+  if (body.status !== undefined) assertMayApprove(existingCase.project_id, existingCase.status, body.status, user);
   if (body.title !== undefined && !str(body.title).trim()) throw new HttpError(400, 'Title is required');
   return tx(() => {
     update('cases', params.id, body, ['title', 'objective', 'precondition', 'priority', 'status', 'folder', 'labels']);
     q('UPDATE cases SET updated_by=? WHERE id=?').run(user.id, params.id);
+    if (body.script_type !== undefined || body.bdd_script !== undefined) saveScript(params.id, body);
     if (body.automation_key !== undefined) setAutomationKey(params.id, q('SELECT project_id FROM cases WHERE id=?').get(params.id).project_id, body.automation_key);
     if (body.params !== undefined) q('UPDATE cases SET params=? WHERE id=?').run(cleanParams(body.params), params.id);
     if (body.steps !== undefined) replaceSteps(params.id, body.steps);
     if (body.links !== undefined) links.replaceLinks(params.id, body.links);
+    if (body.fields !== undefined) fieldsApi.save(q('SELECT project_id FROM cases WHERE id=?').get(params.id).project_id, 'case', params.id, body.fields);
     const version = versions.recordVersion(params.id, user.id);
     return { ok: true, version };
   });
@@ -624,6 +667,7 @@ route('POST', '/api/cases/:id/clone', ({ params, user }) => {
       c.folder, c.labels, t, t, user.id, user.id, c.params).lastInsertRowid);
     replaceSteps(id, q('SELECT action, test_data, expected, call_case_id FROM steps WHERE case_id=? ORDER BY position').all(c.id));
     links.copyLinks(c.id, id);
+    fieldsApi.copy('case', c.id, id);
     versions.recordVersion(id, user.id);
     return { id, key };
   });
@@ -631,6 +675,7 @@ route('POST', '/api/cases/:id/clone', ({ params, user }) => {
 
 route('DELETE', '/api/cases/:id', ({ params, user }) => tx(() => {
   detachCalls(params.id, user.id);
+  fieldsApi.remove('case', params.id);
   q('DELETE FROM cases WHERE id=?').run(params.id);
   return { ok: true };
 }));
@@ -786,6 +831,7 @@ route('POST', '/api/projects/:pid/cycles', ({ params, body, user }) => {
     const id = Number(q('INSERT INTO cycles(project_id, key, name, description, environment, build, created_at, created_by, plan_id) VALUES (?,?,?,?,?,?,?,?,?)')
       .run(params.pid, key, name, str(body.description), str(body.environment).trim(), str(body.build).trim(), now(), user.id, planOrNull(params.pid, body.plan_id)).lastInsertRowid);
     addCasesToCycle(id, params.pid, body.caseIds);
+    if (body.fields !== undefined) fieldsApi.save(params.pid, 'cycle', id, body.fields);
     return { id, key };
   });
 });
@@ -794,7 +840,8 @@ route('GET', '/api/cycles/:id', ({ params }) => {
   const c = need(q('SELECT * FROM cycles WHERE id=?').get(params.id), 'Cycle');
   c.created_by_name = (q('SELECT display_name FROM users WHERE id=?').get(c.created_by || 0) || {}).display_name || '';
   const plan = c.plan_id ? q('SELECT key, name FROM plans WHERE id=?').get(c.plan_id) : null;
-  c.plan_key = plan ? plan.key : '';
+  c.fields = fieldsApi.read('cycle', c.id);
+  c.plan_key = plan ? plan.key : ''; 
   c.plan_name = plan ? plan.name : '';
   c.executions = q(`SELECT e.id, e.case_id, e.case_key, e.case_title, e.status, e.executed_at, e.assignee_id, e.iteration, e.iteration_label,
       (SELECT display_name FROM users WHERE id=e.assignee_id) AS assignee_name,
@@ -816,6 +863,7 @@ route('PUT', '/api/cycles/:id', ({ params, body }) => {
       if (body[f] !== undefined) q(`UPDATE cycles SET ${f}=? WHERE id=?`).run(str(body[f]).trim().slice(0, 5000), c.id);
     }
     q('UPDATE cycles SET plan_id=? WHERE id=?').run(plan, c.id);
+    if (body.fields !== undefined) fieldsApi.save(c.project_id, 'cycle', c.id, body.fields);
     return { ok: true };
   });
 });
@@ -873,6 +921,7 @@ function deleteStepAttachments(where, arg) {
 }
 
 route('DELETE', '/api/cycles/:id', ({ params }) => tx(() => {
+  fieldsApi.remove('cycle', params.id);
   deleteStepAttachments('e.cycle_id=?', params.id);
   q('DELETE FROM cycles WHERE id=?').run(params.id);
   return { ok: true };
@@ -992,6 +1041,7 @@ route('POST', '/api/projects/:pid/bugs', ({ params, body, user }) => {
     const id = Number(q(`INSERT INTO bugs(project_id, key, title, severity, priority, environment, expected, actual, steps_to_reproduce, created_at, updated_at, reported_by)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(params.pid, key, title.slice(0, 300), severity, priority, str(body.environment),
       str(body.expected), str(body.actual), str(body.steps_to_reproduce), t, t, user.id).lastInsertRowid);
+    if (body.fields !== undefined) fieldsApi.save(params.pid, 'bug', id, body.fields);
     return { id, key };
   });
 });
@@ -1000,6 +1050,7 @@ route('GET', '/api/bugs/:id', ({ params }) => {
   const b = need(q(`SELECT b.*, (SELECT display_name FROM users WHERE id=b.reported_by) AS reporter_name,
     (SELECT display_name FROM users WHERE id=b.assignee_id) AS assignee_name FROM bugs b WHERE b.id=?`).get(params.id), 'Bug');
   b.attachments = attachmentsOf('bug', b.id);
+  b.fields = fieldsApi.read('bug', b.id);
   b.links = q('SELECT kind, external_key, url, created_at, external_state, external_label, synced_at, sync_error FROM bug_links WHERE bug_id=? ORDER BY id').all(b.id);
   b.comments = q(`SELECT c.id, c.body, c.created_at, c.user_id, u.display_name AS author FROM bug_comments c
     LEFT JOIN users u ON u.id=c.user_id WHERE c.bug_id=? ORDER BY c.id`).all(b.id);
@@ -1033,6 +1084,7 @@ route('PUT', '/api/bugs/:id', ({ params, body, user }) => {
   if (body.title !== undefined && !str(body.title).trim()) throw new HttpError(400, 'Title is required');
   update('bugs', params.id, body, ['title', 'status', 'severity', 'priority', 'environment', 'expected', 'actual', 'steps_to_reproduce']);
   if (body.assignee_id !== undefined) q('UPDATE bugs SET assignee_id=?, updated_at=? WHERE id=?').run(assigneeOrNull(body.assignee_id), now(), params.id);
+  if (body.fields !== undefined) fieldsApi.save(before.project_id, 'bug', params.id, body.fields);
   const after = q('SELECT * FROM bugs WHERE id=?').get(params.id);
   const link = `#/bugs/${after.id}`;
   if (after.assignee_id && after.assignee_id !== before.assignee_id && after.assignee_id !== user.id) {
@@ -1048,6 +1100,7 @@ route('PUT', '/api/bugs/:id', ({ params, body, user }) => {
 });
 
 route('DELETE', '/api/bugs/:id', ({ params }) => tx(() => {
+  fieldsApi.remove('bug', params.id);
   q("DELETE FROM attachments WHERE owner_type='bug' AND owner_id=?").run(params.id);
   q('DELETE FROM bugs WHERE id=?').run(params.id);
   return { ok: true };
@@ -1111,13 +1164,15 @@ seed();
 versions.backfill(); // the demo cases created by seed() above
 
 // ---------- feature modules ----------
-const ctx = { route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links, notifier, addColumn, syncHooks,
+const ctx = { route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links, notifier, addColumn, syncHooks, fieldsApi, versions,
   snapshotCase, rollup, insertCase, saveAttachment, setAutomationKey, autoKeyTaken, planOrNull };
 secret.init(DATA_DIR);
 authRoutes.install(ctx);
 require('./routes/notifications').install(ctx);
 require('./routes/integrations').install(ctx);
 require('./routes/sync').install(ctx);
+require('./routes/fields').install(ctx);
+require('./routes/review').install(ctx);
 require('./routes/reports').install(ctx);
 require('./routes/plans').install(ctx);
 require('./routes/traceability').install(ctx);
