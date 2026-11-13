@@ -52,6 +52,11 @@ test('check-integration: read-only by default, creates one clearly labelled issu
     assert.equal((await run(['github', '--owner', 'acme', '--repo', 'shop'], {})).code, 1, 'no token in the environment');
     assert.match((await run(['github', '--owner', 'acme'], { GITHUB_TOKEN: 'x' })).err, /--owner and --repo/);
     assert.match((await run(['jira', '--base', 'http://example.com', '--email', 'a@b.co', '--project', 'P1'], { JIRA_TOKEN: 'x' })).err, /must start with https/);
-    assert.match((await run(['trello'], {})).err, /github or jira/);
+    assert.match((await run(['trello'], {})).err, /github, jira, linear, azure or gitlab/);
+    // the other trackers read their own token variable and complain about their own missing options
+    assert.match((await run(['linear'], { LINEAR_TOKEN: 'x' })).err, /--team is required/);
+    assert.match((await run(['azure', '--project', 'Shop'], { AZURE_TOKEN: 'x' })).err, /--base .* and --project are required/);
+    assert.match((await run(['gitlab'], { GITLAB_TOKEN: 'x' })).err, /--project is required/);
+    assert.match((await run(['gitlab', '--project', 'a/b'], {})).err, /set GITLAB_TOKEN/);
   } finally { f.close(); }
 });

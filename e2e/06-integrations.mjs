@@ -23,7 +23,7 @@ const { check, js, sleep, api, go, click, text, count, exists, visible, setValue
 await t.setup();
 
 await go('#/integrations');
-check('integrations page has both cards, nothing connected yet', (await count('[data-card]')) === 2 && (await text('[data-card=github] .int-head')).includes('Not set up'));
+check('integrations page has all five cards, nothing connected yet', (await count('[data-card]')) === 5 && (await text('[data-card=github] .int-head')).includes('Not set up'));
 const fill = async (kind, values) => { for (const [f, v] of Object.entries(values)) await setValue(`[data-card=${kind}] [data-f=${f}]`, v); };
 await fill('github', { owner: 'acme', repo: 'shop', labels: 'bug, ui-found', base: mockUrl, token: 'wrong-token' });
 await click('[data-card=github] [data-act=test]'); await sleep(900);

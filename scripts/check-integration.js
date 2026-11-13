@@ -26,6 +26,7 @@ const TOKEN_VAR = `${kind.toUpperCase()}_TOKEN`;
 const token = process.env[TOKEN_VAR];
 if (!token) die(`set ${TOKEN_VAR} in the environment`);
 
+if (kind === 'azure' && !opt('base')) die('--base (your organisation URL) and --project are required');
 let cfg;
 try {
   cfg = kind === 'github'
