@@ -71,6 +71,7 @@ All of that user's sessions are ended.
   only the mapped columns change, steps are replaced only if the file has steps, and a blank priority/status never overwrites.
 - **CI results API**: record automated test results from any pipeline (see below).
 - **Reports**: results per cycle, coverage of each case, failure hotspots, flaky tests, slowest automated tests (from CI `duration_ms` / JUnit `time`), bug stats, tester activity, requirement coverage.
+- **Live updates**: when someone else changes something, lists and summaries you are looking at refresh by themselves, and new notifications reach the bell at once (Server-Sent Events, `GET /api/events`; the stream carries only *what kind of thing* changed, never its content). A page you could lose work on (a case or bug being edited, the test player, an open dialog or a focused field) is never replaced: it shows "Someone changed this · Refresh" instead. Changes made by your own account are not echoed back, so a second tab of yours does not update. Behind a reverse proxy, turn response buffering off for `/api/events` (nginx: `proxy_buffering off`; the server already sends `X-Accel-Buffering: no`).
 - **Accounts**: roles *admin*, *tester*, *viewer* (read only). Everything is attributed: who wrote a version, ran a test, filed or was assigned a bug.
 
 ## CI results
@@ -118,6 +119,7 @@ curl -sS "$URL/api/ci/cycle?name=Nightly&build=$BUILD_ID" -H "Authorization: Bea
 | `TRASH_DAYS` | `30` | How long deleted test cases, cycles and bugs stay in Trash before they are removed for good |
 | `NOTIFY_TICK_MS` | `10000` | How often the background worker looks for email to send, digests and reminders due |
 | `NOTIFY_DIGEST_MS` / `NOTIFY_DUE_MS` | `82800000` (23 h) | Minimum time between daily summaries / overdue reminders (tests shorten these) |
+| `LIVE_HEARTBEAT_MS` | `20000` | How often open live-update streams are pinged and their sign-in re-checked |
 | `SYNC_TICK_MS` | `300000` | How often linked Jira/GitHub issues are checked for status changes |
 | `AUDIT_KEEP_DAYS` / `LOGIN_KEEP_DAYS` | `365` / `180` | How long the audit log and sign-in history are kept (30 to 3650) |
 
@@ -147,7 +149,7 @@ Everything lives in `DATA_DIR`. For a consistent copy while the server runs:
 ```
 server.js            core: database, cases, cycles, executions, bugs, HTTP
 routes/              dashboard, templates, policy, oidc, webhooks, views, trash, auth, security (audit, sessions), notifications, integrations, sync, fields, review, reports, plans, traceability, API tokens, CI
-lib/                 auth, secret, integrations (Jira/GitHub/Linear/Azure DevOps/GitLab), zephyr, xls, qr, totp, oidc, versions, links, import, export, JUnit reader
+lib/                 live (server-sent events), auth, secret, integrations (Jira/GitHub/Linear/Azure DevOps/GitLab), zephyr, xls, qr, totp, oidc, versions, links, import, export, JUnit reader
 scripts/             reset-password, check-integration
 public/              the web app (vanilla JS, no build step)
 test/                API tests (node --test)

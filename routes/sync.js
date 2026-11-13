@@ -8,6 +8,7 @@
 const crypto = require('node:crypto');
 const secret = require('../lib/secret');
 const { Limiter } = require('../lib/auth');
+const live = require('../lib/live');
 
 const LABEL = { github: 'GitHub', jira: 'Jira', linear: 'Linear', azure: 'Azure DevOps', gitlab: 'GitLab' };
 const CLOSED = ['Resolved', 'Closed'];
@@ -38,6 +39,7 @@ function install(ctx) {
     else if (state === 'progress' && (link.bug_status === 'Open' || closed)) target = 'In Progress';
     if (!target || target === link.bug_status) return { changed: false };
     q('UPDATE bugs SET status=?, updated_at=? WHERE id=?').run(target, now(), link.bug_id);
+    live.publish({ topic: 'bugs', pid: link.project_id });
     q('INSERT INTO bug_comments(bug_id, user_id, body, created_at) VALUES (?,NULL,?,?)')
       .run(link.bug_id, `Status changed from ${link.bug_status} to ${target} because ${link.external_key} is now “${label}” in ${LABEL[link.kind]}.`, now());
     for (const uid of new Set([link.reported_by, link.assignee_id])) {

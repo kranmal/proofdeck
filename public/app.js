@@ -729,8 +729,81 @@ function setBadge(n) {
 async function refreshBadge() {
   try { setBadge((await fetch('/api/notifications/unread-count').then((r) => (r.ok ? r.json() : { count: 0 }))).count); } catch { /* offline */ }
 }
-function startNotifPolling() { stopNotifPolling(); refreshBadge(); notifTimer = setInterval(() => { if (document.visibilityState === 'visible') refreshBadge(); }, 30000); }
-function stopNotifPolling() { clearInterval(notifTimer); notifTimer = null; setBadge(0); }
+// The live feed delivers new notifications at once; the slow poll below is only a safety net for when the feed is down.
+function startNotifPolling() { stopNotifPolling(); refreshBadge(); notifTimer = setInterval(() => { if (document.visibilityState === 'visible') refreshBadge(); }, 120000); startLive(); }
+function stopNotifPolling() { clearInterval(notifTimer); notifTimer = null; setBadge(0); stopLive(); }
+
+// ---------- live updates ----------
+// The server says when something in the project changed (never what). If the page on screen is affected and nobody is
+// typing in it, it re-reads itself; editors, the test player and open dialogs get a "Refresh" notice instead so no
+// unsaved work is ever replaced. Changes made by this same account are not announced back (the page already shows them).
+const LIVE_TOPICS = {
+  cases: ['cases', 'import', 'folders', 'templates', 'fields', 'item-comments', 'attachments', 'trash'],
+  plans: ['plans', 'cases', 'cycles'],
+  cycles: ['cycles', 'executions', 'step-results', 'bugs', 'attachments', 'item-comments', 'plans'],
+  bugs: ['bugs', 'bug-comments', 'step-results', 'attachments', 'sync'],
+  dash: ['cases', 'cycles', 'executions', 'step-results', 'bugs', 'plans', 'import', 'trash'],
+  reports: ['cases', 'cycles', 'executions', 'step-results', 'bugs', 'plans', 'import'],
+  trash: ['trash', 'cases', 'cycles', 'bugs', 'executions'],
+};
+const LIVE_AUTO = /^#?\/?$|^#\/(cases|plans|cycles|bugs|reports|trash|notifications)$|^#\/cycles\/\d+$/; // lists and summaries; everything else asks first
+let liveSource = null, liveTimer = null, liveLastRun = 0, liveStale = false, liveWasDown = false;
+
+function liveRouteName() { const hit = ROUTES.find(([re]) => re.test(location.hash || '#/')); return hit ? hit[1] : ''; }
+function liveBusy() {
+  if (dlg.open) return true;
+  const el = document.activeElement;
+  return !!el && ((el !== document.body && view.contains(el) && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) || el.isContentEditable);
+}
+function liveBar(show) {
+  let bar = $('#livebar');
+  if (!show) { if (bar) bar.remove(); return; }
+  if (bar) return;
+  bar = document.createElement('div');
+  bar.id = 'livebar'; bar.className = 'livebar'; bar.setAttribute('role', 'status');
+  bar.innerHTML = '<span>Someone changed this. </span><button type="button" class="btn small">Refresh</button>';
+  bar.querySelector('button').onclick = () => liveRefresh(true);
+  view.prepend(bar);
+}
+async function liveRefresh(force) {
+  liveBar(false);
+  liveStale = false;
+  liveLastRun = Date.now();
+  const y = window.scrollY;
+  await router();
+  window.scrollTo(0, y);
+  if (force) toast('Refreshed');
+}
+function liveChanged(changes) {
+  const route = liveRouteName(), topics = LIVE_TOPICS[route];
+  if (!topics || !STATE.user) return;
+  const hit = changes.some((c) => c.actor !== STATE.user.id && (c.pid == null || c.pid === STATE.pid) && topics.includes(c.topic));
+  if (!hit) return;
+  if (document.visibilityState !== 'visible') { liveStale = true; return; }
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => {
+    if (!LIVE_AUTO.test(location.hash || '#/') || liveBusy()) return liveBar(true);
+    liveRefresh(false);
+  }, Math.max(600, 3000 - (Date.now() - liveLastRun)));
+}
+function startLive() {
+  stopLive();
+  if (!window.EventSource) return;
+  const es = liveSource = new EventSource('/api/events');
+  es.addEventListener('change', (e) => { try { liveChanged(JSON.parse(e.data).changes || []); } catch { /* ignore */ } });
+  es.addEventListener('notify', () => { refreshBadge(); if (liveRouteName() === 'notifications' && !liveBusy()) liveRefresh(false); });
+  es.addEventListener('bye', () => stopLive());
+  es.onerror = () => { liveWasDown = true; };
+  es.onopen = () => { if (liveWasDown) { liveWasDown = false; refreshBadge(); liveChanged([{ topic: 'cases', pid: null, actor: null }, { topic: 'cycles', pid: null, actor: null }, { topic: 'bugs', pid: null, actor: null }, { topic: 'trash', pid: null, actor: null }]); } };
+}
+function stopLive() { if (liveSource) { liveSource.close(); liveSource = null; } clearTimeout(liveTimer); liveBar(false); }
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !STATE.user) return;
+  refreshBadge();
+  if (liveStale) { liveStale = false; liveChanged([{ topic: LIVE_TOPICS[liveRouteName()] ? LIVE_TOPICS[liveRouteName()][0] : '', pid: null, actor: null }]); }
+});
+window.addEventListener('hashchange', () => liveBar(false));
+
 
 async function viewNotifications() {
   const { items, unread } = await api('GET', '/api/notifications?limit=100');

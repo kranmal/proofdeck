@@ -411,6 +411,7 @@ const links = require('./lib/links')({ q, str, HttpError });
 const syncHooks = { statusChanged() {} }; // set by routes/sync.js
 const gherkin = require('./lib/gherkin');
 const fieldsApi = { read: () => ({}), save() {}, copy() {}, remove() {} }; // set by routes/fields.js
+const live = require('./lib/live');
 const notifier = require('./lib/notify')({ q, now, str });
 versions.backfill();
 
@@ -1492,6 +1493,12 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
 
+    if (req.method === 'GET' && p === '/api/events') {
+      const u = authRoutes.userFromRequest(req);
+      if (!u) throw new HttpError(401, 'Sign in required');
+      return live.attach(req, res, u, (r) => authRoutes.userFromRequest(r, false)) // checking the sign-in must not count as being active;
+    }
+
     if (req.method === 'GET' && STATIC[p]) {
       const [file, type] = STATIC[p];
       return send(res, 200, fs.readFileSync(path.join(PUBLIC_DIR, file)), { 'Content-Type': type, 'Cache-Control': 'no-cache' });
@@ -1557,6 +1564,7 @@ const server = http.createServer(async (req, res) => {
       requestZone = (user && user.timezone) || '';
       const out = await r.handler({ params, body, query: url.searchParams, user, req, token: apiToken });
       security.audit({ method: req.method, pattern: r.pattern, path: p, params, body, user, token: apiToken, req, out });
+      if (req.method !== 'GET' && !r.pattern.startsWith('/api/auth/')) live.publish({ topic: live.topicOf(r.pattern), pid: params.pid || null, actor: user ? user.id : null });
       if (out instanceof Raw) return send(res, out.status, out.body, out.headers);
       return sendJson(res, 200, out);
     }

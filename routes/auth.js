@@ -16,14 +16,14 @@ const tokenOf = (req) => auth.parseCookies(req.headers.cookie)[auth.COOKIE] || '
 const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role, email: u.email || '', notify_email: u.notify_email || 'instant', timezone: u.timezone || '', weekly_report: !!u.weekly_report, totp: !!u.totp_enabled, must2fa: !!(ctx.mustSetup2fa && ctx.mustSetup2fa(u)) };
 
 // Returns the signed-in user (with _sid, the session hash) or null.
-function userFromRequest(req) {
+function userFromRequest(req, touch = true) {
   const token = tokenOf(req);
   if (!token) return null;
   const u = ctx.q(`SELECT u.*, s.last_seen_at AS _seen FROM sessions s JOIN users u ON u.id=s.user_id
     WHERE s.token_hash=? AND s.expires_at>? AND u.active=1`).get(sha(token), ctx.now());
   if (!u) return null;
   const { _seen, ...user } = u;
-  if (!_seen || Date.now() - Date.parse(_seen) > 300000) ctx.q('UPDATE sessions SET last_seen_at=? WHERE token_hash=?').run(ctx.now(), sha(token));
+  if (touch && (!_seen || Date.now() - Date.parse(_seen) > 300000)) ctx.q('UPDATE sessions SET last_seen_at=? WHERE token_hash=?').run(ctx.now(), sha(token));
   return { ...user, _sid: sha(token) };
 }
 

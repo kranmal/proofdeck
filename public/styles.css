@@ -458,3 +458,5 @@ body.viewer [data-act^="add-"], body.viewer [data-act^="del-"], body.viewer [dat
 .secretkey { font-size: 15px; letter-spacing: 1px; word-break: break-all; }
 .qr { width: 200px; max-width: 100%; border: 1px solid var(--line, #d9dce6); border-radius: 6px; overflow: hidden; }
 .qr svg { display: block; width: 100%; height: auto; }
+
+.livebar { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin: 0 0 16px; padding: 10px 14px; border: 1px solid var(--accent, #2563eb); border-radius: 8px; background: color-mix(in srgb, var(--accent, #2563eb) 10%, transparent); }
