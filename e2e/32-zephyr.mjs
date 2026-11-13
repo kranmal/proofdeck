@@ -1,0 +1,50 @@
+// Import dialog: pull test cases straight from (a fake) Zephyr Scale Cloud, preview, import.
+import http from 'node:http';
+import { connect } from './uilib.mjs';
+const TOKEN = 'zs_e2e_token';
+const send = (res, s, o) => { res.writeHead(s, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+const cases = [{ key: 'Z-T1', name: 'Pulled from Zephyr', objective: 'Obj', precondition: '', priority: { id: 1 }, status: { id: 11 }, folder: { id: 20 }, labels: ['api'] }, { key: 'Z-T2', name: 'Second pulled case', priority: { id: 2 }, status: { id: 12 }, labels: [] }];
+const steps = { 'Z-T1': [{ inline: { description: 'Step one', testData: 'd1', expectedResult: 'e1' } }, { inline: { description: 'Step two', testData: '', expectedResult: 'e2' } }], 'Z-T2': [{ inline: { description: 'Only', testData: '', expectedResult: 'ok' } }] };
+const zs = http.createServer((req, res) => {
+  if (req.headers.authorization !== `Bearer ${TOKEN}`) return send(res, 401, { message: 'Unauthorized' });
+  const u = new URL(req.url, 'http://x'); let m;
+  const page = (v) => send(res, 200, { isLast: true, values: v });
+  if (u.pathname === '/v2/priorities') return page([{ id: 1, name: 'High' }, { id: 2, name: 'Low' }]);
+  if (u.pathname === '/v2/statuses') return page([{ id: 11, name: 'Approved' }, { id: 12, name: 'Draft' }]);
+  if (u.pathname === '/v2/folders') return page([{ id: 20, parentId: null, name: 'Imported' }]);
+  if (u.pathname === '/v2/testcases') return page(cases);
+  if ((m = /^\/v2\/testcases\/([\w-]+)\/teststeps$/.exec(u.pathname))) return page(steps[m[1]] || []);
+  send(res, 404, { message: 'nope' });
+});
+await new Promise((r) => zs.listen(0, '127.0.0.1', r));
+
+const t = await connect({ out: process.argv[2] });
+const { check, js, sleep, api, go, click, text, count, submit, send: cdp } = t;
+await cdp('Emulation.setFocusEmulationEnabled', { enabled: true });
+await t.setup();
+const type = (sel, v) => js(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+
+await go('#/cases'); await sleep(700);
+await click('[data-act=import]'); await sleep(500);
+await js(`document.querySelector('#zeph').open = true`);
+check('the Zephyr Scale section is in the import dialog', await js(`!!document.querySelector('#zeph [name=zt]')`));
+await js(`(() => { const s = document.querySelector('[name=zv]'); s.value = 'server'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+check('Server / Data Center asks for the Jira address', (await text('[data-zbase-label]')).includes('Jira address'));
+await js(`(() => { const s = document.querySelector('[name=zv]'); s.value = 'cloud'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+check('Cloud offers an optional API address', (await text('[data-zbase-label]')).includes('API address'));
+await type('[name=zp]', 'ZEP'); await type('[name=zb]', `http://127.0.0.1:${zs.address().port}/v2`); await type('[name=zt]', 'bad');
+await click('[data-zfetch]'); await sleep(1200);
+check('a rejected token is explained and nothing can be imported', (await text('#imp')).includes('Zephyr Scale said') && await js(`document.querySelector('#imp-go').disabled`), await text('#imp'));
+await type('[name=zt]', TOKEN);
+await click('[data-zfetch]'); await sleep(1500);
+check('fetching shows how many cases came back and a column mapping', (await text('#zmsg')).includes('Got 2 test cases') && (await count('[data-map]')) > 5, await text('#zmsg'));
+check('the token field is cleared after use', (await js(`document.querySelector('[name=zt]').value`)) === '');
+check('the preview counts cases and steps', (await text('#imp-prev')).includes('2') && (await text('#imp-prev')).includes('3 step'), await text('#imp-prev'));
+await js(`document.querySelector('#imp-go').click()`); await sleep(1500);
+const list = await api('/api/projects/1/cases');
+const made = list.find((c) => c.title === 'Pulled from Zephyr');
+const full = made && await api(`/api/cases/${made.id}`);
+check('the cases are created with their steps, folder, priority and status', full && full.steps.length === 2 && full.folder === 'Imported' && full.priority === 'High' && full.status === 'Approved' && list.some((c) => c.title === 'Second pulled case'), JSON.stringify(full && [full.steps.length, full.folder, full.priority, full.status]));
+check('no unexpected console errors', t.errors.filter((e) => !/status of (401|403|400|404|429|502)/.test(e)).length === 0, t.errors.join(' | '));
+zs.close();
+process.exit(t.finish() ? 1 : 0);

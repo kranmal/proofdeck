@@ -1553,6 +1553,12 @@ function openImport(onDone) {
     <p class="muted">CSV or Excel (.xlsx or the older .xls). One row per step, with the test case fields on the first row of each case — the layout Zephyr Scale and most tools export.
       <a href="/api/import/template.csv" download>Download a template</a></p>
     <label>File<input type="file" name="file" accept=".csv,.tsv,.txt,.xlsx,.xls"></label>
+    <details id="zeph"><summary>Or pull straight from Zephyr Scale</summary>
+      <div class="two"><label>Edition<select name="zv"><option value="cloud">Zephyr Scale Cloud</option><option value="server">Jira Server / Data Center</option></select></label>
+        <label>Jira project key<input name="zp" maxlength="20" placeholder="PROJ" autocomplete="off"></label></div>
+      <label data-zbase><span data-zbase-label>API address <small>(leave blank for the standard Zephyr Scale Cloud address; set it for a regional one)</small></span><input name="zb" placeholder="https://api.zephyrscale.smartbear.com/v2" autocomplete="off"></label>
+      <label>API token<small>Cloud: an API access token from your Jira profile in Zephyr Scale. Server / Data Center: a Jira personal access token. It is used once and not saved.</small><input name="zt" type="password" autocomplete="off"></label>
+      <p><button type="button" class="btn ghost small" data-zfetch>${withIcon('download', 'Fetch test cases')}</button> <span class="muted" id="zmsg" role="status"></span></p></details>
     <div id="imp"></div>
     <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary" id="imp-go" disabled>Import</button></footer>`,
     async () => {
@@ -1586,6 +1592,12 @@ function openImport(onDone) {
         box.innerHTML = '<p class="muted">Reading file…</p>';
         try {
           parsed = await api('POST', '/api/import/parse', { ...payload, sheet });
+          await show();
+        } catch (err) { parsed = null; box.innerHTML = `<p class="warn">${esc(err.message)}</p>`; }
+      };
+      // Draws the column matching and preview for whatever `parsed` holds: a file, or test cases pulled from Zephyr Scale.
+      const show = async () => {
+        {
           mapping = { ...parsed.mapping };
           strip = !!parsed.hasHtml;
           const cols = (f) => `<option value="-1">— not imported —</option>` + parsed.headers.map((h, i) => `<option value="${i}"${mapping[f] === i ? ' selected' : ''}>${esc(h)}</option>`).join('');
@@ -1598,9 +1610,27 @@ function openImport(onDone) {
               <label class="check"><input type="checkbox" data-html${strip ? ' checked' : ''}> Remove HTML formatting${parsed.hasHtml ? ' <small>(found in this file)</small>' : ''}</label></div>
             <div id="imp-prev"></div>`;
           await preview();
-        } catch (err) { parsed = null; box.innerHTML = `<p class="warn">${esc(err.message)}</p>`; }
+        }
       };
+      form.addEventListener('click', async (e) => {
+        if (!e.target.closest('[data-zfetch]')) return;
+        const msg = $('#zmsg', form), btn = e.target.closest('[data-zfetch]');
+        btn.disabled = true; msg.textContent = 'Fetching… this can take a minute for a large project.';
+        go.disabled = true;
+        try {
+          parsed = await api('POST', '/api/import/zephyr', { variant: form.zv.value, projectKey: form.zp.value, base: form.zb.value, token: form.zt.value });
+          form.zt.value = '';
+          msg.textContent = `Got ${parsed.count} test case${parsed.count === 1 ? '' : 's'}${parsed.capped ? ' (stopped at the limit of 2000; import again for the rest)' : ''}.`;
+          await show();
+        } catch (err) { parsed = null; msg.textContent = ''; box.innerHTML = `<p class="warn">${esc(err.message)}</p>`; } finally { btn.disabled = false; }
+      });
       form.addEventListener('change', async (e) => {
+        if (e.target.name === 'zv') {
+          const server = e.target.value === 'server';
+          $('[data-zbase-label]', form).innerHTML = server ? 'Jira address <small>(where Jira is, e.g. https://jira.example.com)</small>' : 'API address <small>(leave blank for the standard Zephyr Scale Cloud address; set it for a regional one)</small>';
+          form.zb.placeholder = server ? 'https://jira.example.com' : 'https://api.zephyrscale.smartbear.com/v2';
+          return;
+        }
         if (e.target.name === 'file') {
           const f = e.target.files[0];
           if (!f) return;

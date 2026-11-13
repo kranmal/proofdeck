@@ -44,6 +44,7 @@ All of that user's sessions are ended.
 - **Jira Cloud, Jira Server / Data Center and GitHub**: send a bug as an issue (Jira gets the attachments; GitHub's API cannot take images).
 - **Linear, Azure DevOps and GitLab**: the same "send a bug as an issue" with two-way status sync (polled; no webhooks). Azure DevOps and GitLab take the screenshots; Linear leaves them in Proofdeck. Linear, Azure DevOps and GitLab are checked only against local fake servers, so run `npm run check-integration` with real credentials before relying on them: `LINEAR_TOKEN=… -- linear --team ENG`, `AZURE_TOKEN=… -- azure --base https://dev.azure.com/ORG --project P`, `GITLAB_TOKEN=… -- gitlab --project group/project`.
   Optional **two-way status sync**: closing the issue resolves the bug (checked every few minutes, or instantly through a webhook) and,
+- **Direct Zephyr Scale import**: in the import dialog, pull test cases from Zephyr Scale Cloud (API v2) or Zephyr Scale on Jira Server / Data Center instead of exporting a file. They go through the same column matching, preview and “update existing” modes. Up to 2000 cases per pull; the token is used once and never stored. Checked only against local fake servers written from the public API docs, so try it on a small project first.
   if you switch it on, resolving the bug closes the issue. Server / Data Center uses a personal access token and REST v2.
 - **Your dashboard and weekly email**: the Overview has a Waiting for you card (your open runs with overdue marks, bugs, reviews), your last 14 days and the team by week. Turn on the Monday summary email in your account menu (sent after the daily-summary hour, on your own Monday); “Send me one now” previews it.
 - **Case templates**: save any test case as a template (objective, preconditions, steps, data sets, labels, field values) and start new cases from it with “From template” on the test case list.
@@ -146,7 +147,7 @@ Everything lives in `DATA_DIR`. For a consistent copy while the server runs:
 ```
 server.js            core: database, cases, cycles, executions, bugs, HTTP
 routes/              dashboard, templates, policy, oidc, webhooks, views, trash, auth, security (audit, sessions), notifications, integrations, sync, fields, review, reports, plans, traceability, API tokens, CI
-lib/                 auth, secret, integrations (Jira/GitHub), versions, links, import, export, JUnit reader
+lib/                 auth, secret, integrations (Jira/GitHub/Linear/Azure DevOps/GitLab), zephyr, xls, qr, totp, oidc, versions, links, import, export, JUnit reader
 scripts/             reset-password, check-integration
 public/              the web app (vanilla JS, no build step)
 test/                API tests (node --test)

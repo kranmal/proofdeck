@@ -8,6 +8,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const importer = require('./lib/import');
+const zephyr = require('./lib/zephyr');
+const { IntegrationError } = require('./lib/integrations');
 const exporter = require('./lib/export');
 const authRoutes = require('./routes/auth');
 const tokens = require('./routes/tokens');
@@ -593,6 +595,17 @@ route('POST', '/api/projects/:pid/cases', ({ params, body, user }) => {
 route('POST', '/api/import/parse', ({ body }) => {
   try { return importer.parseTable(Buffer.from(str(body.data), 'base64'), body.sheet); }
   catch (e) { if (e instanceof importer.ImportError) throw new HttpError(400, e.message); throw e; }
+});
+
+// Pull test cases from the Zephyr Scale API; the answer has the same shape as a parsed file, so the usual preview follows.
+route('POST', '/api/import/zephyr', async ({ body }) => {
+  try {
+    const t = await zephyr.fetchTable(body);
+    return { ...importer.tableResult([t.headers, ...t.rows], 'zephyr'), count: t.count, capped: t.capped };
+  } catch (e) {
+    if (e instanceof IntegrationError) throw new HttpError(e.message.includes(' said: ') || /reached|timed out|redirected|too long/.test(e.message) ? 502 : 400, e.message);
+    throw e;
+  }
 });
 
 // Apply a row group from a file to an existing test case. Only the columns the file maps are touched; steps are
