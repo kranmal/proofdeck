@@ -1413,6 +1413,7 @@ require('./routes/trash').install(ctx);
 require('./routes/views').install(ctx);
 require('./routes/webhooks').install(ctx);
 require('./routes/oidc').install(ctx);
+require('./routes/policy').install(ctx);
 require('./routes/reports').install(ctx);
 require('./routes/plans').install(ctx);
 require('./routes/traceability').install(ctx);
@@ -1513,6 +1514,8 @@ const server = http.createServer(async (req, res) => {
           if (!user) throw new HttpError(401, 'Sign in required');
           if (r.opts.admin && user.role !== 'admin') throw new HttpError(403, 'Only admins can do this');
           if (req.method !== 'GET' && user.role === 'viewer' && !r.opts.viewer) throw new HttpError(403, 'Your account is read-only');
+          // The sign-in policy asks this person to set up two-factor first: only the account endpoints work until they do.
+          if (ctx.mustSetup2fa(user) && !p.startsWith('/api/auth/')) throw new HttpError(403, 'Two-factor sign-in is required. Set it up to continue.', { needs2faSetup: true });
         }
       }
       if (apiToken && req.method !== 'GET' && req.method !== 'DELETE') {

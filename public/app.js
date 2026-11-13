@@ -1081,7 +1081,21 @@ function renderSecondFactor(ticket, message = '') {
   };
 }
 
+// The sign-in policy wants this person to set up two-factor before anything else works.
+function renderForcedTwoFactor(user) {
+  $('#auth').hidden = false;
+  $('#auth').innerHTML = `<div class="auth-card"><div class="brand"><span class="logo" aria-hidden="true"></span>Proofdeck</div>
+    <h1>Set up two-factor sign-in</h1><p class="muted">Your organisation requires a code from an authenticator app in addition to your password. Set it up once and you can carry on.</p>
+    <div id="twofa"></div><p class="muted authalt"><a href="#" id="forced-out">Sign out</a></p></div>`;
+  STATE.user = user;
+  const box = $('#twofa');
+  mountTwoFactor(box);
+  box.addEventListener('click', (e) => { if (e.target.closest('[data-tf=done]')) location.reload(); });
+  $('#forced-out').onclick = async (e) => { e.preventDefault(); await fetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); location.reload(); };
+}
+
 async function startApp(user) {
+  if (user.must2fa) return renderForcedTwoFactor(user);
   STATE.user = user;
   $('#auth').hidden = true;
   $('#auth').innerHTML = '';
@@ -1169,6 +1183,7 @@ $('#me').onclick = openAccount;
 
 async function viewSso() {
   const c = await api('GET', '/api/settings/oidc');
+  const pol = await api('GET', '/api/settings/security');
   view.innerHTML = `
     <header class="head"><h1>Single sign-on</h1></header>
     <p class="meta">Let people sign in with your company account through any OpenID Connect provider (Google, Microsoft Entra, Okta, Keycloak, Authentik…). Password sign-in keeps working, so you cannot lock yourself out.</p>
@@ -1187,7 +1202,18 @@ async function viewSso() {
           <label>Only for these email domains<small>Comma separated. Blank allows any verified email.</small><input name="allowedDomains" value="${esc(c.allowedDomains)}" placeholder="example.com"></label></div>
         <p class="muted">Existing accounts are matched by their verified email address the first time. Nobody is made an admin automatically.</p></fieldset>
       <p class="wide rowbtns"><button type="submit" class="btn primary">Save</button> <button type="button" class="btn ghost" data-act="test">${withIcon('check', 'Test the provider')}</button> <span id="sso-result" class="muted" role="status"></span></p>
-    </form></section>`;
+    </form></section>
+    <section class="card"><h2>Sign-in policy</h2><form id="policy-form" class="form">
+      <label class="wide">Require two-factor sign-in for<select name="require2fa">${[['off', 'Nobody'], ['admins', 'Admins'], ['all', 'Everyone']].map(([v, l]) => `<option value="${v}"${pol.require2fa === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+        <small>People without it are asked to set it up at their next sign-in and can do nothing else until they have. People who sign in through single sign-on are not asked: the provider has done that step.</small></label>
+      <label class="check wide"><input type="checkbox" name="ssoOnly"${pol.ssoOnly ? ' checked' : ''}${c.enabled ? '' : ' disabled'}> People linked to single sign-on cannot use their password
+        <small>${c.enabled ? 'Admins always keep their password, so a provider outage cannot lock everyone out.' : 'Turn on single sign-on above first.'}</small></label>
+      <p class="wide"><button type="submit" class="btn primary">Save policy</button></p></form></section>`;
+  $('#policy-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    try { await api('PUT', '/api/settings/security', { require2fa: f.require2fa.value, ssoOnly: f.ssoOnly.checked }); toast('Policy saved'); } catch (err) { fail(err); }
+  };
   const form = $('#sso-form');
   const body = () => ({ enabled: form.enabled.checked, issuer: form.issuer.value, clientId: form.clientId.value, clientSecret: form.clientSecret.value, label: form.label.value, scopes: form.scopes.value,
     autoCreate: form.autoCreate.checked, defaultRole: form.defaultRole.value, allowedDomains: form.allowedDomains.value });
@@ -1294,7 +1320,7 @@ async function viewUsers() {
     <header class="head"><h1>Users</h1><button class="btn primary" data-act="add">${withIcon('plus', 'Add user')}</button></header>
     <section class="card flush"><table><thead><tr><th>Name</th><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead><tbody>
     ${users.map((u) => `<tr><td>${esc(u.display_name)}</td><td class="muted">${esc(u.username)}</td><td class="muted">${esc(u.email || '—')}</td><td>${pill(u.role)}</td>
-      <td>${u.active ? pill('Active') : pill('Inactive')}</td><td class="muted">${fmtDate(u.last_login)}</td>
+      <td>${u.active ? pill('Active') : pill('Inactive')}${u.sso ? ' <span class="pill">SSO</span>' : ''}${u.totp ? ' <span class="pill">2FA</span>' : ''}</td><td class="muted">${fmtDate(u.last_login)}</td>
       <td class="num"><button type="button" class="icon" data-act="edit" data-id="${u.id}" title="Edit ${esc(u.username)}" aria-label="Edit ${esc(u.username)}">${icon('pencil')}</button>
         <button type="button" class="icon" data-act="reset" data-id="${u.id}" title="Reset password" aria-label="Reset password for ${esc(u.username)}">${icon('key')}</button>
         <button type="button" class="icon" data-act="signout" data-id="${u.id}" title="Sign out everywhere" aria-label="Sign ${esc(u.username)} out everywhere">${icon('logout')}</button></td></tr>`).join('')}

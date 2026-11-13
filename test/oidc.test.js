@@ -160,3 +160,17 @@ test('single sign-on can be turned off; the login endpoint then refuses', async 
   assert.equal((await fetch(`${ctx.server.base}/api/auth/oidc/login`, { redirect: 'manual' })).status, 404);
   assert.equal((await a.get('/api/settings/oidc')).data.hasSecret, true, 'the stored secret survives a save that leaves it blank');
 });
+
+test('"SSO only" stops linked people (not admins) from using their password', async () => {
+  await a.ok('PUT', '/api/settings/oidc', settings());
+  plan.claims = {}; // sam@corp.example is linked to the "samuel" account from an earlier test
+  await a.ok('PUT', '/api/settings/security', { require2fa: 'off', ssoOnly: true });
+  const denied = await new Client(ctx.server.base).post('/api/auth/login', { username: 'samuel', password: 'a long password 1' });
+  assert.equal(denied.status, 403);
+  assert.match(denied.data.error, /signs in with Corp login/);
+  assert.equal((await new Client(ctx.server.base).post('/api/auth/login', { username: 'admin', password: 'correct horse battery' })).status, 200, 'admins keep their password');
+  assert.equal((await new Client(ctx.server.base).post('/api/auth/login', { username: 'tess', password: 'password-for-tess' })).status, 200, 'unlinked accounts too');
+  assert.ok((await signIn()).session, 'and the provider still works');
+  assert.equal((await a.get('/api/users')).data.find((u) => u.username === 'samuel').sso, 1, 'the users list shows who is linked');
+  await a.ok('PUT', '/api/settings/security', { require2fa: 'off', ssoOnly: false });
+});

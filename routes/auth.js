@@ -12,7 +12,7 @@ const limiter = new auth.Limiter();
 const ROLES = ['admin', 'tester', 'viewer'];
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const tokenOf = (req) => auth.parseCookies(req.headers.cookie)[auth.COOKIE] || '';
-const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role, email: u.email || '', notify_email: u.notify_email || 'instant', timezone: u.timezone || '', totp: !!u.totp_enabled };
+const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role, email: u.email || '', notify_email: u.notify_email || 'instant', timezone: u.timezone || '', totp: !!u.totp_enabled, must2fa: !!(ctx.mustSetup2fa && ctx.mustSetup2fa(u)) };
 
 // Returns the signed-in user (with _sid, the session hash) or null.
 function userFromRequest(req) {
@@ -115,6 +115,10 @@ function install(c) {
       throw new HttpError(401, 'Wrong username or password');
     }
     limiter.ok(key);
+    if (u.oidc_sub && u.role !== 'admin' && ctx.signInPolicy().ssoOnly) {
+      ctx.security.loginEvent(req, { username, userId: u.id, ok: false, reason: 'password sign-in is switched off for single sign-on accounts' });
+      throw new HttpError(403, `Your account signs in with ${ctx.ssoInfo().label || 'single sign-on'}. Use the button below the form.`);
+    }
     if (u.totp_enabled) return json({ needs2fa: true, ticket: issueTicket(u.id) }); // the password was right; a code from the authenticator app is still needed
     ctx.security.loginEvent(req, { username, userId: u.id, ok: true });
     q('UPDATE users SET last_login=? WHERE id=?').run(now(), u.id);
@@ -222,7 +226,7 @@ function install(c) {
   // Everyone signed in can list active users (for assignee pickers); admins also see roles and inactive accounts.
   route('GET', '/api/users', ({ user }) => {
     if (user.role !== 'admin') return q('SELECT id, username, display_name FROM users WHERE active=1 ORDER BY display_name COLLATE NOCASE').all();
-    return q('SELECT id, username, display_name, email, role, active, created_at, last_login, totp_enabled AS totp FROM users ORDER BY active DESC, display_name COLLATE NOCASE').all();
+    return q('SELECT id, username, display_name, email, role, active, created_at, last_login, totp_enabled AS totp, (LENGTH(oidc_sub)>0) AS sso FROM users ORDER BY active DESC, display_name COLLATE NOCASE').all();
   });
 
   route('POST', '/api/users', async ({ body }) => {
