@@ -1024,7 +1024,9 @@ function mountTwoFactor(box) {
         <pre class="recovery">${extra.codes.map(esc).join('\n')}</pre>
         <p><button type="button" class="btn small ghost" data-tf="copy">${withIcon('copy', 'Copy codes')}</button> <button type="button" class="btn small primary" data-tf="done">I have saved them</button></p>`;
     } else if (stage === 'setup') {
-      box.innerHTML = `<p>1. In your authenticator app (Google Authenticator, Authy, 1Password, Aegis…) add an account with this key, or open the link on your phone:</p>
+      box.innerHTML = `<p>1. In your authenticator app (Google Authenticator, Authy, 1Password, Aegis…) scan this code:</p>
+        <div class="qr">${extra.qr}</div>
+        <p class="muted">Or add it by hand with this key, or open the link on your phone:</p>
         <p><code class="secretkey">${esc(extra.secret.match(/.{1,4}/g).join(' '))}</code> <a class="btn small ghost" href="${esc(extra.uri)}">Open in app</a></p>
         <label>2. Enter the 6-digit code it shows<input data-tf-code inputmode="numeric" autocomplete="one-time-code" maxlength="7"></label>
         <p><button type="button" class="btn small primary" data-tf="enable">Turn on</button> <button type="button" class="btn small ghost" data-tf="cancel">Cancel</button></p>`;

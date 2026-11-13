@@ -26,6 +26,7 @@ test('setting up: nothing is enforced until a real code proves the app works', a
   secret = s.secret;
   assert.match(s.secret, /^[A-Z2-7]{32}$/);
   assert.match(s.uri, /^otpauth:\/\/totp\/Proofdeck:tess\?secret=/);
+  assert.match(s.qr, /^<svg [^>]*aria-label="QR code/);
   assert.equal((await login(fresh(), tess)).status, 200, 'still just a password');
   assert.equal((await tess.client.post('/api/auth/2fa/enable', { code: '000000' })).status, 400);
   assert.equal((await tess.client.post('/api/auth/2fa/enable', { code: 'abcdef' })).status, 400);

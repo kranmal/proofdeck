@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const auth = require('../lib/auth');
 const { validEmail } = require('../lib/smtp');
 const totp = require('../lib/totp');
+const qr = require('../lib/qr');
 const secret = require('../lib/secret');
 
 let ctx;
@@ -154,7 +155,8 @@ function install(c) {
     if (user.totp_enabled) throw new HttpError(400, 'Two-factor sign-in is already on');
     const s = totp.newSecret();
     q('UPDATE users SET totp_secret=? WHERE id=?').run(secret.encrypt(s), user.id);
-    return { secret: s, uri: totp.uri(s, user.username) };
+    const uri = totp.uri(s, user.username);
+    return { secret: s, uri, qr: qr.toSvg(uri, 'QR code to add Proofdeck to your authenticator app') };
   }, { viewer: true });
 
   route('POST', '/api/auth/2fa/enable', ({ body, user }) => {

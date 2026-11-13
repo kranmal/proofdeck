@@ -18,6 +18,7 @@ await click('#me'); await sleep(500);
 check('account dialog offers to set up two-factor', (await text('#twofa')).includes('Set up'));
 await js(`document.querySelector('[data-tf=setup]').click()`); await sleep(600);
 const secret = (await text('.secretkey')).replace(/\s/g, '');
+check('a QR code is shown', (await count('#twofa .qr svg path')) === 1);
 check('a key is shown to add to the app', /^[A-Z2-7]{32}$/.test(secret), secret);
 await type('[data-tf-code]', '000000'); await js(`document.querySelector('[data-tf=enable]').click()`); await sleep(600);
 check('a wrong code is refused', (await text('#toast')).includes('not right'), await text('#toast'));
