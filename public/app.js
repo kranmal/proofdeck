@@ -1668,6 +1668,7 @@ async function viewCases() {
     <header class="head"><h1>Test cases</h1><span>
       <button type="button" class="btn ghost" data-act="import">${withIcon('upload', 'Import')}</button>
       <button type="button" class="btn ghost" data-act="export">${withIcon('download', 'Export')}</button>
+      <button type="button" class="btn ghost" data-act="from-template">${withIcon('copy', 'From template')}</button>
       <a class="btn primary" href="#/cases/new">${withIcon('plus', 'New test case')}</a></span></header>
     <div class="split">
       <aside class="card tree-pane" aria-label="Folders"><h2>Folders</h2><ul id="tree" class="tree" role="tree"></ul></aside>
@@ -1742,6 +1743,26 @@ async function viewCases() {
       else if (act === 'toggle') { const p = b.dataset.path; if (U.collapsed.has(p)) U.collapsed.delete(p); else U.collapsed.add(p); paint(); }
       else if (act === 'run') await runCase(b.dataset.id);
       else if (act === 'import') openImport(() => refresh().catch(fail));
+      else if (act === 'from-template') {
+        const list = await api('GET', `/api/projects/${STATE.pid}/templates`);
+        const paintList = () => list.length ? list.map((t) => `<div class="srow"><span><b>${esc(t.name)}</b><br><small class="muted">${t.steps} step${t.steps === 1 ? '' : 's'}${t.created_by_name ? ' · ' + esc(t.created_by_name) : ''}</small></span>
+          <span><button type="button" class="btn small primary" data-use="${t.id}">Use</button>${t.created_by === STATE.user.id || STATE.user.role === 'admin' ? ` <button type="button" class="icon danger" data-rmtpl="${t.id}" title="Delete template" aria-label="Delete template ${esc(t.name)}">${icon('trash')}</button>` : ''}</span></div>`).join('')
+          : '<p class="muted">No templates yet. Open any test case and choose “Save as template”.</p>';
+        openDialog(`<h2>New test case from a template</h2><div id="tpls" class="sessions">${paintList()}</div>
+          <footer><button type="button" class="btn ghost" data-close>Close</button></footer>`, async () => {}, (form) => {
+          form.addEventListener('click', async (ev) => {
+            const use = ev.target.closest('[data-use]'), rm = ev.target.closest('[data-rmtpl]');
+            try {
+              if (use) { PENDING_TEMPLATE.value = (await api('GET', `/api/templates/${use.dataset.use}`)).data; dlg.close(); location.hash = '#/cases/new'; }
+              else if (rm && confirm('Delete this template? Test cases made from it are not affected.')) {
+                await api('DELETE', `/api/templates/${rm.dataset.rmtpl}`);
+                list.splice(list.findIndex((t) => String(t.id) === rm.dataset.rmtpl), 1);
+                $('#tpls', form).innerHTML = paintList();
+              }
+            } catch (err) { fail(err); }
+          });
+        });
+      }
       else if (act === 'export' || act === 'bulk-export') exportDialog();
       else if (act === 'new-folder') {
         pathDialog({ title: U.folder ? `New subfolder in ${U.folder}` : 'New folder', label: 'Folder path', hint: 'Use / to nest, e.g. Checkout/Payments', value: U.folder ? U.folder + '/' : '', cta: 'Create folder' },
@@ -1829,15 +1850,19 @@ async function viewCases() {
   paint();
 }
 
+const PENDING_TEMPLATE = { value: null }; // a template chosen on the list, read once when the new-case editor opens
 async function viewCaseEdit(id) {
   const isNew = id === 'new';
   const folders = await api('GET', `/api/projects/${STATE.pid}/folders`);
   const history = isNew ? [] : await api('GET', `/api/cases/${id}/versions`);
   const allCases = (await api('GET', `/api/projects/${STATE.pid}/cases`)).filter((x) => String(x.id) !== String(id));
   const cfDefs = await api('GET', `/api/projects/${STATE.pid}/fields?entity=case`);
+  const tpl = isNew ? PENDING_TEMPLATE.value : null;
+  PENDING_TEMPLATE.value = null;
   const c = isNew
     ? { title: '', objective: '', precondition: '', priority: 'Medium', status: 'Draft', folder: CASES_UI.folder, labels: '', steps: [{}], bugs: [], runs: [], usedBy: [], links: [], fields: {}, script_type: 'steps', bdd_script: '', params: { columns: [], rows: [] } }
     : await api('GET', `/api/cases/${id}`);
+  if (tpl) Object.assign(c, { objective: tpl.objective, precondition: tpl.precondition, priority: tpl.priority, labels: tpl.labels, steps: tpl.steps.length ? tpl.steps : [{}], fields: tpl.fields, params: tpl.params, script_type: tpl.script_type, bdd_script: tpl.bdd_script });
   let steps = c.steps.length ? c.steps.map((s) => ({ ...s })) : [{}];
   let params = { columns: [...c.params.columns], rows: c.params.rows.map((r) => [...r]) };
   let links = c.links.map((l) => ({ ...l }));
@@ -1891,7 +1916,7 @@ async function viewCaseEdit(id) {
 
   view.innerHTML = `
     <header class="head"><h1>${isNew ? 'New test case' : `<span class="key">${esc(c.key)}</span> Edit test case`}</h1>
-      <span>${isNew ? '' : `<button class="btn danger" data-act="delete">${withIcon('trash', 'Delete')}</button> ${c.status === 'Draft' ? `<button class="btn ghost" data-act="request-review">${withIcon('check', 'Request review')}</button> ` : ''}<button class="btn ghost" data-act="clone">${withIcon('copy', 'Clone')}</button> <button class="btn ghost" data-act="run" title="Run the last saved version on its own">${withIcon('play', 'Run')}</button>`}
+      <span>${isNew ? '' : `<button class="btn danger" data-act="delete">${withIcon('trash', 'Delete')}</button> ${c.status === 'Draft' ? `<button class="btn ghost" data-act="request-review">${withIcon('check', 'Request review')}</button> ` : ''}<button class="btn ghost" data-act="clone">${withIcon('copy', 'Clone')}</button> <button class="btn ghost" data-act="save-template">${withIcon('save', 'Save as template')}</button> <button class="btn ghost" data-act="run" title="Run the last saved version on its own">${withIcon('play', 'Run')}</button>`}
       <a class="btn ghost" href="#/cases">Cancel</a> <button class="btn primary" data-act="save">${withIcon('save', 'Save')}</button></span></header>
     ${reviewBanner()}
     ${isNew ? '' : `<p class="meta">Version ${c.version}${c.updated_by_name ? ` · last edited by ${esc(c.updated_by_name)}` : ''} on ${fmtDate(c.updated_at)}${c.created_by_name ? ` · created by ${esc(c.created_by_name)}` : ''}</p>`}
@@ -2032,6 +2057,11 @@ async function viewCaseEdit(id) {
         router();
       } else if (act === 'run') {
         await runCase(id);
+      } else if (act === 'save-template') {
+        openDialog(`<h2>Save ${esc(c.key)} as a template</h2><p class="muted">Saves the last saved version of this test case (objective, preconditions, steps, data sets, labels and field values) as a starting point for new ones. Using an existing name replaces that template.</p>
+          <label>Template name<input name="name" required maxlength="80" autofocus value="${esc(c.title)}"></label>
+          <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Save template</button></footer>`,
+          async (fd) => { await api('POST', `/api/projects/${STATE.pid}/templates`, { name: fd.get('name'), caseId: Number(id) }); toast('Template saved'); });
       } else if (act === 'clone') {
         const r = await api('POST', `/api/cases/${id}/clone`, {});
         toast(`Cloned as ${esc(r.key)}`);

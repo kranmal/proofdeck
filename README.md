@@ -44,6 +44,7 @@ All of that user's sessions are ended.
 - **Jira Cloud, Jira Server / Data Center and GitHub**: send a bug as an issue (Jira gets the attachments; GitHub's API cannot take images).
   Optional **two-way status sync**: closing the issue resolves the bug (checked every few minutes, or instantly through a webhook) and,
   if you switch it on, resolving the bug closes the issue. Server / Data Center uses a personal access token and REST v2.
+- **Case templates**: save any test case as a template (objective, preconditions, steps, data sets, labels, field values) and start new cases from it with “From template” on the test case list.
 - **Sign-in policy** (admin, on the Single sign-on page): require two-factor for admins or everyone (people without it must set it up before anything else works), and stop SSO-linked people (except admins) from using a password.
 - **Single sign-on** (admin): OpenID Connect authorization-code flow with PKCE for any provider (Google, Entra, Okta, Keycloak…). ID tokens are verified (RS256/ES256, issuer, audience, expiry, nonce). Existing accounts are linked by verified email; optional auto-create with a domain allow-list, never as admin. Password sign-in stays available. Only verified against a local fake provider, not a real one.
 - **Two-factor sign-in**: any account can add an authenticator app (TOTP, RFC 6238) in the account menu. Setup shows a QR code (generated in-house, no libraries) plus the key. Sign-in then needs the password plus a 6-digit code; each code works once. Ten one-time recovery codes are shown at setup. A wrong-code limit protects the account, admins can reset it for someone, and `npm run reset-password -- <user> --clear-2fa` does the same from the server.
@@ -142,7 +143,7 @@ Everything lives in `DATA_DIR`. For a consistent copy while the server runs:
 
 ```
 server.js            core: database, cases, cycles, executions, bugs, HTTP
-routes/              oidc, webhooks, views, trash, auth, security (audit, sessions), notifications, integrations, sync, fields, review, reports, plans, traceability, API tokens, CI
+routes/              templates, policy, oidc, webhooks, views, trash, auth, security (audit, sessions), notifications, integrations, sync, fields, review, reports, plans, traceability, API tokens, CI
 lib/                 auth, secret, integrations (Jira/GitHub), versions, links, import, export, JUnit reader
 scripts/             reset-password, check-integration
 public/              the web app (vanilla JS, no build step)

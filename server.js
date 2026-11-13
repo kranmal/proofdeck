@@ -1414,6 +1414,7 @@ require('./routes/views').install(ctx);
 require('./routes/webhooks').install(ctx);
 require('./routes/oidc').install(ctx);
 require('./routes/policy').install(ctx);
+require('./routes/templates').install(ctx);
 require('./routes/reports').install(ctx);
 require('./routes/plans').install(ctx);
 require('./routes/traceability').install(ctx);
