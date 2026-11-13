@@ -205,6 +205,8 @@ const USER_REF = 'INTEGER REFERENCES users(id) ON DELETE SET NULL';
 // Standalone ("ad hoc") runs live in one cycle per project.
 addColumn('cycles', 'adhoc', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('users', 'email', "TEXT NOT NULL DEFAULT ''");
+addColumn('users', 'weekly_report', 'INTEGER NOT NULL DEFAULT 0'); // Monday summary email
+addColumn('users', 'weekly_last_at', "TEXT NOT NULL DEFAULT ''");
 addColumn('users', 'oidc_issuer', "TEXT NOT NULL DEFAULT ''"); // set when the account is linked to a single sign-on identity
 addColumn('users', 'oidc_sub', "TEXT NOT NULL DEFAULT ''");
 addColumn('users', 'totp_secret', "TEXT NOT NULL DEFAULT ''"); // authenticator-app secret, encrypted
@@ -1415,6 +1417,7 @@ require('./routes/webhooks').install(ctx);
 require('./routes/oidc').install(ctx);
 require('./routes/policy').install(ctx);
 require('./routes/templates').install(ctx);
+require('./routes/dashboard').install(ctx);
 require('./routes/reports').install(ctx);
 require('./routes/plans').install(ctx);
 require('./routes/traceability').install(ctx);

@@ -13,7 +13,7 @@ const limiter = new auth.Limiter();
 const ROLES = ['admin', 'tester', 'viewer'];
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const tokenOf = (req) => auth.parseCookies(req.headers.cookie)[auth.COOKIE] || '';
-const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role, email: u.email || '', notify_email: u.notify_email || 'instant', timezone: u.timezone || '', totp: !!u.totp_enabled, must2fa: !!(ctx.mustSetup2fa && ctx.mustSetup2fa(u)) };
+const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role, email: u.email || '', notify_email: u.notify_email || 'instant', timezone: u.timezone || '', weekly_report: !!u.weekly_report, totp: !!u.totp_enabled, must2fa: !!(ctx.mustSetup2fa && ctx.mustSetup2fa(u)) };
 
 // Returns the signed-in user (with _sid, the session hash) or null.
 function userFromRequest(req) {
@@ -216,6 +216,7 @@ function install(c) {
       if (!['instant', 'daily', 'off'].includes(body.notify_email)) throw new HttpError(400, 'Choose instant, daily or off');
       sets.push('notify_email=?'); vals.push(body.notify_email);
     }
+    if (body.weekly_report !== undefined) { sets.push('weekly_report=?'); vals.push(body.weekly_report ? 1 : 0); }
     if (body.timezone !== undefined) {
       const tz = str(body.timezone).trim();
       if (tz && !ctx.validZone(tz)) throw new HttpError(400, 'That time zone is not recognised');

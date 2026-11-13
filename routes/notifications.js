@@ -215,7 +215,7 @@ function install(ctx) {
   async function tick() {
     if (busy) return;
     busy = true;
-    try { digestIfDue(); dueIfDue(); await sendOutbox(); } catch (e) { console.error('notification worker:', e.message); } finally { busy = false; }
+    try { digestIfDue(); dueIfDue(); if (ctx.weeklyIfDue) ctx.weeklyIfDue(); await sendOutbox(); } catch (e) { console.error('notification worker:', e.message); } finally { busy = false; }
   }
   ctx.resetAvailable = resetAvailable;
   notifier.hooks.kick = () => setImmediate(tick);

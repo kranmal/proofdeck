@@ -1120,6 +1120,8 @@ function openAccount() {
     <p>Signed in as <b>${esc(u.display_name)}</b> <span class="muted">(${esc(u.username)}, ${esc(u.role)})</span></p>
     <h3>Email</h3>
     <label>Email address<small>Used for notifications and to reset your password.</small><input type="email" name="email" value="${esc(u.email || '')}" maxlength="254" autocomplete="email"></label>
+    <label class="check"><input type="checkbox" name="weekly_report"${u.weekly_report ? ' checked' : ''}> Email me a summary of my week on Mondays <small>(what is waiting for me, what I ran, how the team did)</small></label>
+    <p><button type="button" class="btn small ghost" data-act="weekly-now">Send me one now</button></p>
     <label>Email me about my notifications<select name="notify_email">${[['instant', 'Straight away'], ['daily', 'Once a day, as a summary'], ['off', 'Never (I will check in the app)']].map(([v, l]) => `<option value="${v}"${u.notify_email === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
     <h3>Two-factor sign-in</h3>
     <div id="twofa"></div>
@@ -1137,7 +1139,7 @@ function openAccount() {
     async (fd) => {
       const cur = fd.get('current'), nxt = fd.get('next');
       if ((cur && !nxt) || (!cur && nxt)) throw new Error('To change your password, fill in both password fields');
-      const r = await api('PUT', '/api/auth/profile', { email: fd.get('email'), notify_email: fd.get('notify_email'), timezone: fd.get('timezone') });
+      const r = await api('PUT', '/api/auth/profile', { email: fd.get('email'), notify_email: fd.get('notify_email'), timezone: fd.get('timezone'), weekly_report: fd.get('weekly_report') === 'on' });
       Object.assign(STATE.user, r.user);
       if (cur) await api('POST', '/api/auth/password', { current: cur, next: nxt });
       toast(cur ? 'Saved. Password changed' : 'Saved');
@@ -1163,6 +1165,9 @@ function openAccount() {
       });
       form.addEventListener('click', async (e) => {
         try {
+          if (e.target.closest('[data-act=weekly-now]')) {
+            await api('POST', '/api/auth/weekly-report/send', {}); toast('Sent. It should arrive in a minute.'); return;
+          }
           if (e.target.closest('[data-act=browser-tz]')) {
             const z = Intl.DateTimeFormat().resolvedOptions().timeZone;
             const sel = form.querySelector('[name=timezone]');
@@ -1457,6 +1462,31 @@ document.addEventListener('keydown', (e) => {
 // ---------- overview ----------
 async function viewDashboard() {
   const s = await api('GET', `/api/projects/${STATE.pid}/summary`);
+  const me = await api('GET', `/api/projects/${STATE.pid}/dashboard`);
+  const wk = (w) => ({ ...w, in_progress: 0 });
+  const mineHtml = `
+    <section class="card" id="mywork"><h2>Waiting for you</h2>
+      ${me.runs.length || me.bugs.length || me.reviews.length ? `
+        ${me.runs.length ? `<h3>Test runs <span class="muted">${me.runs.length}${me.overdueRuns ? `, ${me.overdueRuns} overdue` : ''}</span></h3>
+          <table><tbody>${me.runs.slice(0, 10).map((r) => `<tr><td><a href="#/run/${r.id}"><span class="key">${esc(r.case_key)}</span> ${esc(r.case_title)}</a></td>
+            <td><a href="#/cycles/${r.cycle_id}" class="muted">${esc(r.cycle_key)}</a></td><td class="muted">${r.due_date ? esc(r.due_date) : ''}${r.overdue ? ' <span class="pill fail">Overdue</span>' : ''}</td></tr>`).join('')}</tbody></table>
+          ${me.runs.length > 10 ? `<p class="muted">…and ${me.runs.length - 10} more in <a href="#/cycles">your cycles</a>.</p>` : ''}` : ''}
+        ${me.bugs.length ? `<h3>Open bugs <span class="muted">${me.bugs.length}</span></h3>
+          <table><tbody>${me.bugs.slice(0, 8).map((b) => `<tr><td><a href="#/bugs/${b.id}"><span class="key">${esc(b.key)}</span> ${esc(b.title)}</a></td><td>${pill(b.severity)}</td><td>${pill(b.status)}</td></tr>`).join('')}</tbody></table>` : ''}
+        ${me.reviews.length ? `<h3>To review <span class="muted">${me.reviews.length}</span></h3>
+          <p>${me.reviews.slice(0, 8).map((r) => `<a class="chip ext" href="#/cases/${r.id}"><span>${esc(r.key)} ${esc(r.title)}</span></a>`).join(' ')}</p>` : ''}`
+        : '<p class="empty">Nothing is waiting for you. Enjoy it.</p>'}
+    </section>
+    <section class="card"><h2>Your last 14 days</h2>
+      ${me.done14.length ? `<table><thead><tr><th>Day</th><th class="w-bar">Results</th><th class="num">Pass</th><th class="num">Fail</th><th class="num">Blocked</th></tr></thead><tbody>
+        ${me.done14.map((d) => `<tr><td>${esc(d.day)}</td><td>${bar(wk({ ...d, total: d.pass + d.fail + d.blocked }))}</td><td class="num">${d.pass}</td><td class="num">${d.fail}</td><td class="num">${d.blocked}</td></tr>`).join('')}</tbody></table>`
+        : '<p class="empty">You have not run any tests in the last 14 days.</p>'}
+    </section>
+    <section class="card"><h2>Team, by week</h2>
+      ${me.teamWeekly.some((w) => w.total) ? `<table><thead><tr><th>Week starting</th><th class="w-bar">Results</th><th class="num">Pass</th><th class="num">Fail</th><th class="num">Blocked</th><th class="num">Pass rate</th></tr></thead><tbody>
+        ${me.teamWeekly.map((w) => `<tr><td>${esc(w.from)}</td><td>${bar(wk(w))}</td><td class="num">${w.pass}</td><td class="num">${w.fail}</td><td class="num">${w.blocked}</td><td class="num">${w.total ? Math.round((w.pass / w.total) * 100) + '%' : '—'}</td></tr>`).join('')}</tbody></table>`
+        : '<p class="empty">No results in the last eight weeks.</p>'}
+    </section>`;
   const t = s.totals;
   const done = t.pass + t.fail + t.blocked;
   const rate = done ? Math.round((t.pass / done) * 100) + '%' : '—';
@@ -1472,6 +1502,7 @@ async function viewDashboard() {
       ${s.overdueCycles ? `<a class="tile" href="#/cycles" data-overdue><b>${s.overdueCycles}</b><span>Overdue test cycle${s.overdueCycles === 1 ? '' : 's'}</span></a>` : ''}
       ${s.mine.reviews ? `<a class="tile" href="#/cases" data-review><b>${s.mine.reviews}</b><span>Test cases waiting for your review</span></a>` : ''}
     </section>
+    ${mineHtml}
     <section class="card">
       <h2>Recent cycles</h2>
       ${s.recentCycles.length ? `<table><thead><tr><th>Cycle</th><th>Environment</th><th class="w-bar">Progress</th><th class="num">Pass</th><th class="num">Fail</th><th class="num">Left</th></tr></thead><tbody>
