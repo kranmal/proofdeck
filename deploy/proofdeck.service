@@ -1,0 +1,12 @@
+[Unit]
+Description=Proofdeck test management
+After=network.target
+
+[Service]
+WorkingDirectory=%h/Projects/proofdeck
+ExecStart=%h/.local/bin/node --disable-warning=ExperimentalWarning server.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -140,6 +140,18 @@ curl -sS "$URL/api/ci/cycle?name=Nightly&build=$BUILD_ID" -H "Authorization: Bea
   else downloads. HTML, SVG and scripts are refused.
 - Integration URLs must be `https://` (plain `http://` only for localhost).
 
+## Run it as a service (systemd, Linux)
+
+`deploy/proofdeck.service` is a user unit. It assumes the repo is at `~/Projects/proofdeck` and `node` at `~/.local/bin/node`;
+edit `WorkingDirectory` and `ExecStart` if yours differ. Add `Environment=` lines for `PORT`, `HOST` or `PROOFDECK_SECRET`.
+
+```sh
+mkdir -p ~/.config/systemd/user && cp deploy/proofdeck.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now proofdeck
+loginctl enable-linger "$USER"      # optional: start at boot instead of at login
+journalctl --user -u proofdeck -f   # logs
+```
+
 ## Backups
 
 Everything lives in `DATA_DIR`. For a consistent copy while the server runs:
@@ -152,6 +164,7 @@ server.js            core: database, cases, cycles, executions, bugs, HTTP
 routes/              dashboard, templates, policy, oidc, webhooks, views, trash, auth, security (audit, sessions), notifications, integrations, sync, fields, review, reports, plans, traceability, API tokens, CI
 lib/                 live (server-sent events), auth, secret, integrations (Jira/GitHub/Linear/Azure DevOps/GitLab), zephyr, xls, qr, totp, oidc, versions, links, import, export, JUnit reader
 scripts/             reset-password, check-integration
+deploy/              systemd user unit
 public/              the web app (vanilla JS, no build step)
 test/                API tests (node --test)
 e2e/                 browser checks over the DevTools protocol
