@@ -2000,7 +2000,7 @@ async function viewCycle(id) {
       <span><button class="btn danger" data-act="delete">${withIcon('trash', 'Delete')}</button>
       ${c.adhoc ? '' : `<button class="btn ghost" data-act="edit">${withIcon('pencil', 'Edit')}</button> <button class="btn ghost" data-act="clone">${withIcon('copy', 'Clone')}</button>`}
       <button class="btn ghost" data-act="export">${withIcon('download', 'Export results')}</button>
-      ${c.adhoc ? '' : `<button class="btn ghost" data-act="add">${withIcon('plus', 'Add test cases')}</button>`}
+      ${c.adhoc ? '' : `<button class="btn ghost" data-act="add">${withIcon('plus', 'Add test cases')}</button> <button class="btn ghost" data-act="assign">${withIcon('users', 'Assign runs')}</button>`}
       ${next ? `<a class="btn primary" href="#/run/${next.id}">${icon('play')}<span>${counts.pass + counts.fail + counts.blocked + counts.in_progress ? 'Continue' : 'Start'} testing</span></a>` : ''}</span></header>
     <p class="meta">${[c.adhoc && c.description, c.environment, c.build && `Build ${c.build}`, `Created ${fmtDate(c.created_at)}`].filter(Boolean).map(esc).join(' · ')}${c.plan_id ? ` · Plan <a href="#/plans/${c.plan_id}">${esc(c.plan_key)} ${esc(c.plan_name)}</a>` : ''}${c.due_date ? ` · Due ${esc(c.due_date)}` : ''}${c.overdue ? ' · <span class="pill fail">Overdue</span>' : ''}${c.created_by_name ? ` · by ${esc(c.created_by_name)}` : ''}</p>
     <section class="card">${bar(counts)}<p class="legend">${counts.pass} passed · ${counts.fail} failed · ${counts.blocked} blocked · ${counts.total - counts.pass - counts.fail - counts.blocked} remaining</p></section>
@@ -2035,6 +2035,25 @@ async function viewCycle(id) {
           ${cyDefs.length ? `<div class="form">${fieldInputs(cyDefs, c.fields, 'cy')}</div>` : ''}
           <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Save</button></footer>`,
           async (fd) => { await api('PUT', `/api/cycles/${id}`, { name: fd.get('name'), environment: fd.get('environment'), build: fd.get('build'), start_date: fd.get('start_date'), due_date: fd.get('due_date'), plan_id: fd.get('plan_id') ? Number(fd.get('plan_id')) : null, ...(cyDefs.length ? { fields: readFields(dlg, cyDefs) } : {}) }); toast('Cycle saved'); router(); });
+      } else if (act === 'assign') {
+        const unassigned = c.executions.filter((x) => !x.assignee_id).length, unfinished = c.executions.filter((x) => x.status === 'Not Executed' || x.status === 'In Progress').length;
+        openDialog(`<h2>Assign runs in ${esc(c.key)}</h2>
+          <fieldset><legend>What to do</legend>
+            <label class="radio"><input type="radio" name="mode" value="distribute" checked> <span>Share evenly between the people ticked below</span></label>
+            <label class="radio"><input type="radio" name="mode" value="one"> <span>Give them all to the first person ticked</span></label>
+            <label class="radio"><input type="radio" name="mode" value="clear"> <span>Remove assignees</span></label></fieldset>
+          <fieldset><legend>Which runs</legend>
+            <label class="radio"><input type="radio" name="only" value="unassigned" checked> <span>Only runs nobody has yet (${unassigned})</span></label>
+            <label class="radio"><input type="radio" name="only" value="unfinished"> <span>All runs still to do (${unfinished}), even if assigned</span></label>
+            <label class="radio"><input type="radio" name="only" value="all"> <span>Every run (${c.executions.length})</span></label></fieldset>
+          <fieldset><legend>People</legend>${STATE.users.map((u) => `<label class="check"><input type="checkbox" name="who" value="${u.id}"> ${esc(u.display_name)}</label>`).join('')}</fieldset>
+          <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Assign</button></footer>`,
+          async (fd) => {
+            const who = fd.getAll('who').map(Number), mode = fd.get('mode');
+            if (mode !== 'clear' && !who.length) throw new Error('Tick at least one person');
+            const r = await api('POST', `/api/cycles/${id}/assign`, { mode, only: fd.get('only'), userIds: who, userId: who[0] });
+            toast(mode === 'clear' ? `Cleared ${r.count} assignment${r.count === 1 ? '' : 's'}` : `Assigned ${r.count} run${r.count === 1 ? '' : 's'}`); router();
+          });
       } else if (act === 'export') {
         openExport({ title: `Export results of ${c.key}`, base: `/api/cycles/${id}/export`, note: 'One row per step with its status, actual result and linked bugs.' });
       } else if (act === 'clone') {

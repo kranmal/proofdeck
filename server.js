@@ -1118,6 +1118,32 @@ route('PUT', '/api/executions/:id', ({ params, body, user }) => {
   return { ok: true };
 });
 
+// Assign many runs of a cycle at once: share them evenly between several people, give them all to one person,
+// or clear the assignments. `only` picks which runs are touched. People hear about it in one notice each.
+route('POST', '/api/cycles/:id/assign', ({ params, body, user }) => tx(() => {
+  const cy = need(q('SELECT id, key, name, project_id FROM cycles WHERE id=?').get(params.id), 'Cycle');
+  const mode = str(body.mode), only = str(body.only, 'unassigned');
+  if (!['distribute', 'one', 'clear'].includes(mode)) throw new HttpError(400, 'Choose how to assign');
+  if (!['unassigned', 'unfinished', 'all'].includes(only)) throw new HttpError(400, 'Choose which runs to change');
+  const open = "status IN ('Not Executed','In Progress')";
+  const runs = q(`SELECT id, assignee_id FROM executions WHERE cycle_id=? ${only === 'unassigned' ? 'AND assignee_id IS NULL' : only === 'unfinished' ? `AND ${open}` : ''} ORDER BY id`).all(cy.id);
+  const set = q('UPDATE executions SET assignee_id=? WHERE id=?');
+  const got = new Map();
+  if (mode === 'clear') { for (const r of runs) set.run(null, r.id); return { count: runs.length, perUser: [] }; }
+  const people = mode === 'one' ? [assigneeOrNull(body.userId)] : [...new Set((Array.isArray(body.userIds) ? body.userIds : []).map((x) => assigneeOrNull(x)))];
+  if (!people.length || people.includes(null)) throw new HttpError(400, 'Choose who to assign to');
+  // Fair share: each run goes to whoever has the fewest open runs in this cycle right now.
+  const load = new Map(people.map((p) => [p, q(`SELECT COUNT(*) n FROM executions WHERE cycle_id=? AND assignee_id=? AND ${open}`).get(cy.id, p).n]));
+  for (const r of runs) {
+    const pick = people.reduce((best, p) => (load.get(p) < load.get(best) ? p : best), people[0]);
+    if (r.assignee_id === pick) continue;
+    if (r.assignee_id && load.has(r.assignee_id)) load.set(r.assignee_id, load.get(r.assignee_id) - 1);
+    set.run(pick, r.id); load.set(pick, load.get(pick) + 1); got.set(pick, (got.get(pick) || 0) + 1);
+  }
+  for (const [uid, n] of got) if (uid !== user.id) notifier.notify(uid, { kind: 'run-assigned', title: `${user.display_name} assigned you ${n} test run${n === 1 ? '' : 's'} in ${cy.key} ${cy.name}`, link: `#/cycles/${cy.id}`, projectId: cy.project_id });
+  return { count: [...got.values()].reduce((a, b) => a + b, 0), perUser: [...got].map(([userId, n]) => ({ userId, count: n })) };
+}));
+
 route('DELETE', '/api/executions/:id', ({ params }) => tx(() => {
   deleteStepAttachments('e.id=?', params.id);
   q('DELETE FROM executions WHERE id=?').run(params.id);
