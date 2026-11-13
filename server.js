@@ -767,10 +767,11 @@ route('POST', '/api/cases/:id/clone', ({ params, user }) => {
 });
 
 route('DELETE', '/api/cases/:id', ({ params, user }) => tx(() => {
+  const trashId = ctx.trash.capture('case', params.id, user);
   detachCalls(params.id, user.id);
   fieldsApi.remove('case', params.id);
   q('DELETE FROM cases WHERE id=?').run(params.id);
-  return { ok: true };
+  return { ok: true, trashId };
 }));
 
 // --- version history ---
@@ -883,11 +884,17 @@ route('POST', '/api/projects/:pid/cases/bulk', ({ params, body, user }) => {
   return tx(() => {
     const stmt = action === 'move' ? q('UPDATE cases SET folder=?, updated_at=? WHERE id=? AND project_id=?') : q('DELETE FROM cases WHERE id=? AND project_id=?');
     let n = 0;
+    const trashIds = [];
     for (const id of ids) {
-      if (action === 'delete') detachCalls(id, user.id);
+      if (action === 'delete') {
+        if (!q('SELECT 1 FROM cases WHERE id=? AND project_id=?').get(id, params.pid)) continue;
+        trashIds.push(ctx.trash.capture('case', id, user));
+        detachCalls(id, user.id);
+        fieldsApi.remove('case', id);
+      }
       n += Number(action === 'move' ? stmt.run(folder, now(), id, params.pid).changes : stmt.run(id, params.pid).changes);
     }
-    return { count: n };
+    return { count: n, trashIds };
   });
 });
 
@@ -1047,11 +1054,12 @@ function deleteStepAttachments(where, arg) {
      (SELECT sr.id FROM step_results sr JOIN executions e ON e.id=sr.execution_id WHERE ${where})`).run(arg);
 }
 
-route('DELETE', '/api/cycles/:id', ({ params }) => tx(() => {
+route('DELETE', '/api/cycles/:id', ({ params, user }) => tx(() => {
+  const trashId = ctx.trash.capture('cycle', params.id, user);
   fieldsApi.remove('cycle', params.id);
   deleteStepAttachments('e.cycle_id=?', params.id);
   q('DELETE FROM cycles WHERE id=?').run(params.id);
-  return { ok: true };
+  return { ok: true, trashId };
 }));
 
 // --- executions ---
@@ -1244,11 +1252,12 @@ route('POST', '/api/projects/:pid/bugs/bulk', ({ params, body, user }) => {
   });
 });
 
-route('DELETE', '/api/bugs/:id', ({ params }) => tx(() => {
+route('DELETE', '/api/bugs/:id', ({ params, user }) => tx(() => {
+  const trashId = ctx.trash.capture('bug', params.id, user);
   fieldsApi.remove('bug', params.id);
   q("DELETE FROM attachments WHERE owner_type='bug' AND owner_id=?").run(params.id);
   q('DELETE FROM bugs WHERE id=?').run(params.id);
-  return { ok: true };
+  return { ok: true, trashId };
 }));
 
 route('POST', '/api/bugs/:id/attachments', ({ params, body }) => {
@@ -1356,6 +1365,7 @@ require('./routes/integrations').install(ctx);
 require('./routes/sync').install(ctx);
 require('./routes/fields').install(ctx);
 require('./routes/review').install(ctx);
+require('./routes/trash').install(ctx);
 require('./routes/reports').install(ctx);
 require('./routes/plans').install(ctx);
 require('./routes/traceability').install(ctx);

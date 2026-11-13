@@ -44,6 +44,7 @@ All of that user's sessions are ended.
 - **Jira Cloud, Jira Server / Data Center and GitHub**: send a bug as an issue (Jira gets the attachments; GitHub's API cannot take images).
   Optional **two-way status sync**: closing the issue resolves the bug (checked every few minutes, or instantly through a webhook) and,
   if you switch it on, resolving the bug closes the issue. Server / Data Center uses a personal access token and REST v2.
+- **Trash**: deleting a test case, cycle or bug moves it to Trash (with steps, versions, comments, files, runs and results) for `TRASH_DAYS` days. Undo from the toast or restore from the Trash page; admins can delete for good. Other cases that called a deleted case lose that step, and that is not undone.
 - **Comments and files**: test cases and runs have a comments thread (use `@username` to notify someone; the owner, reviewer, assignee and earlier commenters hear about replies) and file attachments, like bugs do.
 - **Notifications**: in-app and email (your own SMTP server), instant or a daily summary per person, assigned/mentioned/status/due
   reminders, and password reset by email. Email is off until an admin configures it.
@@ -104,6 +105,7 @@ curl -sS "$URL/api/ci/cycle?name=Nightly&build=$BUILD_ID" -H "Authorization: Bea
 | `TRUST_PROXY` | unset | `1` trusts `X-Forwarded-Proto: https` from a reverse proxy to add `Secure` |
 | `PROOFDECK_SECRET` | unset | Encrypts stored Jira/GitHub tokens with this value instead of `data/secret.key` |
 | `PUBLIC_URL` | unset | Public address of Proofdeck, used for the link back from Jira/GitHub issues |
+| `TRASH_DAYS` | `30` | How long deleted test cases, cycles and bugs stay in Trash before they are removed for good |
 | `NOTIFY_TICK_MS` | `10000` | How often the background worker looks for email to send, digests and reminders due |
 | `NOTIFY_DIGEST_MS` / `NOTIFY_DUE_MS` | `82800000` (23 h) | Minimum time between daily summaries / overdue reminders (tests shorten these) |
 | `SYNC_TICK_MS` | `300000` | How often linked Jira/GitHub issues are checked for status changes |
@@ -134,7 +136,7 @@ Everything lives in `DATA_DIR`. For a consistent copy while the server runs:
 
 ```
 server.js            core: database, cases, cycles, executions, bugs, HTTP
-routes/              auth, security (audit, sessions), notifications, integrations, sync, fields, review, reports, plans, traceability, API tokens, CI
+routes/              trash, auth, security (audit, sessions), notifications, integrations, sync, fields, review, reports, plans, traceability, API tokens, CI
 lib/                 auth, secret, integrations (Jira/GitHub), versions, links, import, export, JUnit reader
 scripts/             reset-password, check-integration
 public/              the web app (vanilla JS, no build step)

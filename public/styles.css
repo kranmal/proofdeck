@@ -179,6 +179,8 @@ table.mini th, table.mini td { padding: 6px 8px; }
   border-radius: 10px; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 1000; max-width: 90vw; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 #toast.err { background: #b3261e; }
+#toast .linkbtn { background: none; border: 0; color: #9fc2ff; font: inherit; text-decoration: underline; cursor: pointer; padding: 0 0 0 6px; }
+#toast a { color: #9fc2ff; }
 #toast a { color: #b9c6ff; font-weight: 700; }
 
 @media (max-width: 860px) {

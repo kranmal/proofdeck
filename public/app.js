@@ -80,14 +80,30 @@ async function api(method, url, body) {
 }
 
 let toastTimer;
-function toast(html, isError) {
+function toast(html, isError, ms) {
   const t = $('#toast');
   t.innerHTML = html;
   t.className = 'show' + (isError ? ' err' : '');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = ''; }, isError ? 6000 : 4000);
+  toastTimer = setTimeout(() => { t.className = ''; }, ms || (isError ? 6000 : 4000));
 }
 const fail = (e) => toast(esc(e.message || e), true);
+// After a delete: say where it went and offer to bring it back.
+const KIND_PATH = { case: 'cases', cycle: 'cycles', bug: 'bugs' };
+const deletedToast = (what, trashId) => {
+  if (!trashId) return toast(`${esc(what)} deleted`);
+  toast(`${esc(what)} moved to Trash. <button type="button" class="linkbtn" data-undo="${trashId}">Undo</button>`, false, 12000);
+};
+document.addEventListener('click', async (e) => {
+  const u = e.target.closest('[data-undo]');
+  if (!u) return;
+  try {
+    const r = await api('POST', `/api/trash/${u.dataset.undo}/restore`, {});
+    toast('Restored');
+    const want = `#/${KIND_PATH[r.kind]}/${r.id}`;
+    if (location.hash === want) router(); else location.hash = want;
+  } catch (err) { fail(err); }
+});
 
 function bar(c) {
   const total = c.total || 0;
@@ -1018,6 +1034,36 @@ function openAccount() {
 }
 $('#me').onclick = openAccount;
 
+async function viewTrash() {
+  const { items, days } = await api('GET', `/api/projects/${STATE.pid}/trash`);
+  const admin = STATE.user.role === 'admin';
+  const KIND = { case: 'Test case', cycle: 'Test cycle', bug: 'Bug' };
+  view.innerHTML = `
+    <header class="head"><h1>Trash</h1>${admin && items.length ? `<button class="btn ghost" data-act="empty">${withIcon('trash', 'Empty trash')}</button>` : ''}</header>
+    <p class="meta">Deleted test cases, cycles and bugs stay here for ${days} days and can be restored with their steps, comments, files and results.</p>
+    ${items.length ? `<section class="card flush"><table><thead><tr><th>Item</th><th>Type</th><th>Deleted</th><th>By</th><th></th></tr></thead><tbody>
+      ${items.map((t) => `<tr><td>${esc(t.label)}</td><td class="muted">${KIND[t.kind] || t.kind}</td><td class="muted">${fmtDate(t.deleted_at)}</td><td class="muted">${esc(t.deleted_by_name || '—')}</td>
+        <td class="num"><button type="button" class="btn small ghost" data-act="restore" data-id="${t.id}">${withIcon('rotate', 'Restore')}</button>
+        ${admin ? `<button type="button" class="icon danger" data-act="purge" data-id="${t.id}" title="Delete for good" aria-label="Delete ${esc(t.label)} for good">${icon('trash')}</button>` : ''}</td></tr>`).join('')}
+      </tbody></table></section>` : '<p class="empty">Trash is empty.</p>'}`;
+  view.onclick = async (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    try {
+      if (b.dataset.act === 'restore') {
+        const r = await api('POST', `/api/trash/${b.dataset.id}/restore`, {});
+        toast(`Restored. <a href="#/${KIND_PATH[r.kind]}/${r.id}">Open it</a>`, false, 8000); router();
+      } else if (b.dataset.act === 'purge') {
+        if (!confirm('Delete this for good? It cannot be restored afterwards.')) return;
+        await api('DELETE', `/api/trash/${b.dataset.id}`); router();
+      } else if (b.dataset.act === 'empty') {
+        if (!confirm(`Empty the trash? ${items.length} item${items.length === 1 ? '' : 's'} will be deleted for good.`)) return;
+        await api('DELETE', `/api/projects/${STATE.pid}/trash`); router();
+      }
+    } catch (err) { fail(err); }
+  };
+}
+
 async function viewUsers() {
   const users = await api('GET', '/api/users');
   const ROLE_HELP = { admin: 'Manages users and settings, plus everything testers can do', tester: 'Creates and runs tests, files bugs', viewer: 'Read only' };
@@ -1106,6 +1152,7 @@ const ROUTES = [
   [/^#\/bugs$/, 'bugs', viewBugs],
   [/^#\/bugs\/(\d+)$/, 'bugs', viewBug],
   [/^#\/reports$/, 'reports', viewReports],
+  [/^#\/trash$/, 'trash', viewTrash],
   [/^#\/users$/, 'users', viewUsers],
   [/^#\/integrations$/, 'integrations', viewIntegrations],
   [/^#\/api-tokens$/, 'api-tokens', viewApiTokens],
@@ -1468,10 +1515,11 @@ async function viewCases() {
           (path) => moveCases([...U.sel], path));
       } else if (act === 'bulk-delete') {
         const n = U.sel.size;
-        if (!confirm(`Delete ${n} test case${n === 1 ? '' : 's'}? Past executions and bugs are kept.`)) return;
-        await api('POST', `/api/projects/${STATE.pid}/cases/bulk`, { ids: [...U.sel], action: 'delete' });
+        if (!confirm(`Delete ${n} test case${n === 1 ? '' : 's'}? They move to Trash, where you can restore them. Past executions and bugs are kept.`)) return;
+        const r = await api('POST', `/api/projects/${STATE.pid}/cases/bulk`, { ids: [...U.sel], action: 'delete' });
         U.sel.clear();
         await refresh();
+        toast(`${n} test case${n === 1 ? '' : 's'} moved to Trash. <a href="#/trash">Open Trash</a>`, false, 8000);
       } else if (act === 'bulk-clear') { U.sel.clear(); paint(); }
     } catch (err) { fail(err); }
   };
@@ -1726,9 +1774,10 @@ async function viewCaseEdit(id) {
         toast(`Cloned as ${esc(r.key)}`);
         location.hash = `#/cases/${r.id}`;
       } else if (act === 'delete') {
-        if (!confirm(`Delete ${c.key}? Past executions and bugs are kept.`)) return;
-        await api('DELETE', `/api/cases/${id}`);
+        if (!confirm(`Delete ${c.key}? It moves to Trash, where you can restore it. Past executions and bugs are kept.`)) return;
+        const r = await api('DELETE', `/api/cases/${id}`);
         location.hash = '#/cases';
+        deletedToast(c.key, r.trashId);
       }
     } catch (err) { fail(err); }
   };
@@ -1910,9 +1959,10 @@ async function viewCycle(id) {
     const act = e.target.closest('[data-act]')?.dataset.act;
     try {
       if (act === 'delete') {
-        if (!confirm(`Delete cycle ${c.key} with all its results and screenshots? Bugs already filed are kept.`)) return;
-        await api('DELETE', `/api/cycles/${id}`);
+        if (!confirm(`Delete cycle ${c.key} with all its results and screenshots? It moves to Trash, where you can restore it. Bugs already filed are kept.`)) return;
+        const r = await api('DELETE', `/api/cycles/${id}`);
         location.hash = '#/cycles';
+        deletedToast(c.key, r.trashId);
       } else if (act === 'edit') {
         const plans = await api('GET', `/api/projects/${STATE.pid}/plans`);
         const cyDefs = await api('GET', `/api/projects/${STATE.pid}/fields?entity=cycle`);
@@ -2305,15 +2355,16 @@ async function viewBug(id) {
         await reload();
       } else if (t.dataset.act === 'del-comment') { await api('DELETE', `/api/bug-comments/${t.dataset.id}`); await reload(); }
       else if (t.dataset.act === 'delete') {
-        if (!confirm(`Delete ${b.key} and its screenshots?`)) return;
-        await api('DELETE', `/api/bugs/${id}`);
+        if (!confirm(`Delete ${b.key} and its screenshots? It moves to Trash, where you can restore it.`)) return;
+        const r = await api('DELETE', `/api/bugs/${id}`);
         location.hash = '#/bugs';
+        deletedToast(b.key, r.trashId);
       }
     } catch (err) { fail(err); }
   };
 }
 
-const NAV_ICONS = { dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail', 'custom-fields': 'sliders', audit: 'file' };
+const NAV_ICONS = { trash: 'trash', dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail', 'custom-fields': 'sliders', audit: 'file' };
 $$('#nav a').forEach((a) => { a.innerHTML = withIcon(NAV_ICONS[a.dataset.nav], a.textContent); });
 $('#new-project').innerHTML = withIcon('plus', 'New project');
 
