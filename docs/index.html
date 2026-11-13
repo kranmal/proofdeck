@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proofdeck · self-hosted test management</title>
+<meta name="description" content="Proofdeck is a self-hosted test management web app in the style of Zephyr Scale: cases, cycles, runs and bugs. Node 22 and SQLite, no npm dependencies.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#161a22;--mut:#5b6472;--line:#dfe3ea;--acc:#2f55e0;--code:#eef1f5}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1220;--card:#171b2e;--fg:#e8ebf0;--mut:#9aa4b2;--line:#283040;--acc:#8ea2ff;--code:#0c0f1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:820px;margin:0 auto;padding:40px 16px 64px}
+h1{font-size:2rem;margin:0 0 4px}h2{font-size:1.2rem;margin:0 0 8px}
+.sub{color:var(--mut);margin:0 0 24px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin:0 0 20px}
+.notice{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--acc);border-radius:10px;padding:12px 16px;margin:0 0 20px}
+ul{padding-left:20px;margin:6px 0}
+code,pre{font:.85rem ui-monospace,Menlo,monospace;background:var(--code);border:1px solid var(--line);border-radius:6px}
+code{padding:1px 5px}pre{padding:12px;overflow-x:auto}
+.btns{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0 0}
+a{color:var(--acc)}
+a.btn{display:inline-block;padding:9px 16px;border-radius:8px;text-decoration:none;font-weight:600;border:1px solid var(--line);color:var(--fg)}
+a.btn.p{background:var(--acc);border-color:var(--acc);color:#fff}
+footer{color:var(--mut);font-size:.9rem;margin-top:28px}
+</style>
+</head>
+<body>
+<main>
+<h1>Proofdeck</h1>
+<p class="sub">Self-hosted test management in the style of Zephyr Scale. By <a href="https://github.com/kranmal">kranmal</a>.</p>
+<div class="notice" role="note">Proofdeck is a server app with a database, so it can't run on this page. Run it on your own machine or server; it takes one command.</div>
+
+<section class="card">
+<h2>What it does</h2>
+<ul>
+<li>Test cases with steps, folders, versions, templates and Gherkin or Excel import</li>
+<li>Cycles and runs, with a step-by-step test player that works on a phone, camera included</li>
+<li>Bugs linked to Jira, GitHub, Linear, Azure DevOps and GitLab, with webhooks both ways</li>
+<li>Dashboard, weekly email report, comments, @mentions, saved views and a trash with undo</li>
+<li>Sign-in with OIDC single sign-on or TOTP two-factor, plus live updates between users</li>
+<li>Import from Zephyr Scale and JUnit results</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>Run it</h2>
+<p>Needs Node 22 or newer. There are no packages to install.</p>
+<pre>git clone https://github.com/kranmal/proofdeck
+cd proofdeck
+npm start        # http://127.0.0.1:4780</pre>
+<p>The first visit creates the admin account. Data lives in <code>data/</code>; back it up with <code>sqlite3 data/proofdeck.db ".backup 'copy.db'"</code>.</p>
+<div class="btns">
+<a class="btn p" href="https://github.com/kranmal/proofdeck/archive/refs/heads/main.zip">Download (.zip)</a>
+<a class="btn" href="https://github.com/kranmal/proofdeck">GitHub</a>
+</div>
+</section>
+
+<footer>Tested against local fakes of the trackers, SSO and email; try your real ones with <code>npm run check-integration</code>. &copy; 2026 Ketan Ranmal.</footer>
+</main>
+</body>
+</html>
