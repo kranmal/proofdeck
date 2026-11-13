@@ -9,6 +9,9 @@ const KEEP_LOGIN_DAYS = () => Math.min(3650, Math.max(30, Number(process.env.LOG
 const LABELS = {
   'POST /api/auth/setup': 'First admin account created',
   'POST /api/auth/password': 'Password changed',
+  'POST /api/auth/2fa/enable': 'Two-factor sign-in turned on',
+  'POST /api/auth/2fa/disable': 'Two-factor sign-in turned off',
+  'POST /api/users/:id/2fa-reset': 'Two-factor sign-in reset by an admin',
   'POST /api/users': 'User created',
   'PUT /api/users/:id': 'User changed',
   'POST /api/users/:id/sign-out': 'User signed out everywhere',
@@ -28,7 +31,7 @@ const LABELS = {
   'POST /api/ci/junit': 'CI JUnit results received',
 };
 // Too frequent or too small to be worth a line: running tests, notification housekeeping, own profile and session actions.
-const SKIP = [/^\/api\/step-results\b/, /^\/api\/executions\b/, /^\/api\/attachments\b/, /^\/api\/notifications\b/, /^\/api\/auth\/(?!setup|password)/, /\/run$/, /\/comments$/, /^\/api\/step-results/];
+const SKIP = [/^\/api\/step-results\b/, /^\/api\/executions\b/, /^\/api\/attachments\b/, /^\/api\/notifications\b/, /^\/api\/auth\/(?!setup|password|2fa\/(?:enable|disable))/, /\/run$/, /\/comments$/, /^\/api\/step-results/];
 // Only these request fields are ever copied into the log: never passwords, tokens or secrets.
 const SAFE = ['username', 'display_name', 'role', 'active', 'name', 'title', 'status', 'severity', 'priority', 'action', 'key', 'kind', 'mode', 'scope', 'type', 'enabled', 'strict'];
 

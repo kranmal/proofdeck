@@ -4,13 +4,15 @@
 const crypto = require('node:crypto');
 const auth = require('../lib/auth');
 const { validEmail } = require('../lib/smtp');
+const totp = require('../lib/totp');
+const secret = require('../lib/secret');
 
 let ctx;
 const limiter = new auth.Limiter();
 const ROLES = ['admin', 'tester', 'viewer'];
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const tokenOf = (req) => auth.parseCookies(req.headers.cookie)[auth.COOKIE] || '';
-const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role, email: u.email || '', notify_email: u.notify_email || 'instant', timezone: u.timezone || '' };
+const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role, email: u.email || '', notify_email: u.notify_email || 'instant', timezone: u.timezone || '', totp: !!u.totp_enabled };
 
 // Returns the signed-in user (with _sid, the session hash) or null.
 function userFromRequest(req) {
@@ -22,6 +24,28 @@ function userFromRequest(req) {
   const { _seen, ...user } = u;
   if (!_seen || Date.now() - Date.parse(_seen) > 300000) ctx.q('UPDATE sessions SET last_seen_at=? WHERE token_hash=?').run(ctx.now(), sha(token));
   return { ...user, _sid: sha(token) };
+}
+
+// Passwords that were right but still wait for a second factor. In memory on purpose: a restart just means signing in again.
+const tickets = new Map();
+function issueTicket(userId) {
+  for (const [k, v] of tickets) if (v.expires < Date.now()) tickets.delete(k);
+  const id = crypto.randomBytes(24).toString('base64url');
+  tickets.set(id, { userId, expires: Date.now() + 300000, tries: 0 });
+  return id;
+}
+
+// A six-digit code from the app (each 30 second step works once) or one of the one-time recovery codes.
+function acceptSecondFactor(u, input) {
+  const code = ctx.str(input).trim().toLowerCase();
+  const step = totp.verify(secret.decrypt(u.totp_secret), code, { lastStep: u.totp_last_step });
+  if (step) { ctx.q('UPDATE users SET totp_last_step=? WHERE id=?').run(step, u.id); return true; }
+  const codes = JSON.parse(u.recovery_codes || '[]'), h = sha(code);
+  if (/^[0-9a-f]{6}-[0-9a-f]{6}$/.test(code) && codes.includes(h)) {
+    ctx.q('UPDATE users SET recovery_codes=? WHERE id=?').run(JSON.stringify(codes.filter((x) => x !== h)), u.id);
+    return true;
+  }
+  return false;
 }
 
 function startSession(req, userId) {
@@ -90,10 +114,70 @@ function install(c) {
       throw new HttpError(401, 'Wrong username or password');
     }
     limiter.ok(key);
+    if (u.totp_enabled) return json({ needs2fa: true, ticket: issueTicket(u.id) }); // the password was right; a code from the authenticator app is still needed
     ctx.security.loginEvent(req, { username, userId: u.id, ok: true });
     q('UPDATE users SET last_login=? WHERE id=?').run(now(), u.id);
     return json({ user: publicUser(u) }, startSession(req, u.id));
   }, { public: true });
+
+  // Second step of signing in. The ticket proves the password was right, lasts five minutes, and dies after five wrong codes.
+  route('POST', '/api/auth/login/2fa', ({ body, req }) => {
+    const t = tickets.get(str(body.ticket));
+    if (!t || t.expires < Date.now()) { tickets.delete(str(body.ticket)); throw new HttpError(401, 'That sign-in timed out. Enter your password again.'); }
+    const u = q('SELECT * FROM users WHERE id=? AND active=1').get(t.userId);
+    const fail = (why) => {
+      t.tries++;
+      ctx.security.loginEvent(req, { username: u ? u.username : '', userId: u ? u.id : null, ok: false, reason: why });
+      if (t.tries >= 5) { tickets.delete(str(body.ticket)); throw new HttpError(401, 'Too many wrong codes. Enter your password again.'); }
+      throw new HttpError(401, 'That code is not right');
+    };
+    if (!u || !u.totp_enabled) throw new HttpError(401, 'Sign in again');
+    // Wrong codes count against the account, not only the ticket, so asking for fresh tickets does not help a guesser.
+    const wait = limiter.blocked(`2fa|${u.id}`);
+    if (wait) throw new HttpError(429, `Too many wrong codes. Try again in ${wait} seconds.`);
+    if (!acceptSecondFactor(u, body.code)) { limiter.fail(`2fa|${u.id}`); return fail('wrong two-factor code'); }
+    limiter.ok(`2fa|${u.id}`);
+    tickets.delete(str(body.ticket));
+    ctx.security.loginEvent(req, { username: u.username, userId: u.id, ok: true, reason: 'two-factor' });
+    q('UPDATE users SET last_login=? WHERE id=?').run(now(), u.id);
+    return json({ user: publicUser(u) }, startSession(req, u.id));
+  }, { public: true });
+
+  // ----- two-factor sign-in (authenticator app) -----
+  // Step 1: make a secret and show it. Nothing is enforced until the person proves their app works (step 2).
+  route('POST', '/api/auth/2fa/setup', ({ user }) => {
+    if (user.totp_enabled) throw new HttpError(400, 'Two-factor sign-in is already on');
+    const s = totp.newSecret();
+    q('UPDATE users SET totp_secret=? WHERE id=?').run(secret.encrypt(s), user.id);
+    return { secret: s, uri: totp.uri(s, user.username) };
+  }, { viewer: true });
+
+  route('POST', '/api/auth/2fa/enable', ({ body, user }) => {
+    const u = q('SELECT * FROM users WHERE id=?').get(user.id);
+    if (u.totp_enabled) throw new HttpError(400, 'Two-factor sign-in is already on');
+    if (!u.totp_secret) throw new HttpError(400, 'Start the setup first');
+    const step = totp.verify(secret.decrypt(u.totp_secret), str(body.code));
+    if (!step) throw new HttpError(400, 'That code is not right. Check the clock on your phone and try the next code.');
+    const codes = Array.from({ length: 10 }, () => `${crypto.randomBytes(3).toString('hex')}-${crypto.randomBytes(3).toString('hex')}`);
+    q('UPDATE users SET totp_enabled=1, totp_last_step=?, recovery_codes=? WHERE id=?').run(step, JSON.stringify(codes.map(sha)), u.id);
+    return { recoveryCodes: codes }; // shown once; only their hashes are kept
+  }, { viewer: true });
+
+  route('POST', '/api/auth/2fa/disable', async ({ body, user }) => {
+    const u = q('SELECT * FROM users WHERE id=?').get(user.id);
+    if (!u.totp_enabled) return { ok: true };
+    if (!(await auth.verifyPassword(str(body.password).slice(0, auth.MAX_PASSWORD + 1), u.password_hash))) throw new HttpError(400, 'Wrong password');
+    if (!acceptSecondFactor(u, body.code)) throw new HttpError(400, 'That code is not right');
+    q("UPDATE users SET totp_enabled=0, totp_secret='', totp_last_step=0, recovery_codes='[]' WHERE id=?").run(u.id);
+    return { ok: true };
+  }, { viewer: true });
+
+  // Locked out of their authenticator? An admin can switch it off so they can sign in and set it up again.
+  route('POST', '/api/users/:id/2fa-reset', ({ params }) => {
+    need(q('SELECT 1 FROM users WHERE id=?').get(params.id), 'User');
+    q("UPDATE users SET totp_enabled=0, totp_secret='', totp_last_step=0, recovery_codes='[]' WHERE id=?").run(params.id);
+    return { ok: true };
+  }, { admin: true });
 
   route('POST', '/api/auth/logout', ({ user, req }) => {
     q('DELETE FROM sessions WHERE token_hash=?').run(user._sid);
@@ -137,7 +221,7 @@ function install(c) {
   // Everyone signed in can list active users (for assignee pickers); admins also see roles and inactive accounts.
   route('GET', '/api/users', ({ user }) => {
     if (user.role !== 'admin') return q('SELECT id, username, display_name FROM users WHERE active=1 ORDER BY display_name COLLATE NOCASE').all();
-    return q('SELECT id, username, display_name, email, role, active, created_at, last_login FROM users ORDER BY active DESC, display_name COLLATE NOCASE').all();
+    return q('SELECT id, username, display_name, email, role, active, created_at, last_login, totp_enabled AS totp FROM users ORDER BY active DESC, display_name COLLATE NOCASE').all();
   });
 
   route('POST', '/api/users', async ({ body }) => {

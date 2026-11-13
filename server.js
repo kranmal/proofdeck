@@ -205,6 +205,10 @@ const USER_REF = 'INTEGER REFERENCES users(id) ON DELETE SET NULL';
 // Standalone ("ad hoc") runs live in one cycle per project.
 addColumn('cycles', 'adhoc', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('users', 'email', "TEXT NOT NULL DEFAULT ''");
+addColumn('users', 'totp_secret', "TEXT NOT NULL DEFAULT ''"); // authenticator-app secret, encrypted
+addColumn('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('users', 'totp_last_step', 'INTEGER NOT NULL DEFAULT 0'); // the last accepted 30 second step, so a code works once
+addColumn('users', 'recovery_codes', "TEXT NOT NULL DEFAULT '[]'"); // sha256 of each unused recovery code
 addColumn('users', 'timezone', "TEXT NOT NULL DEFAULT ''"); // IANA name, '' = server default
 addColumn('users', 'digest_last_at', "TEXT NOT NULL DEFAULT ''");
 addColumn('users', 'notify_email', "TEXT NOT NULL DEFAULT 'instant'"); // instant | daily | off

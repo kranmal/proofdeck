@@ -5,6 +5,7 @@
 //   npm run reset-password -- --list
 //   npm run reset-password -- ada                  # prompts for the new password (hidden)
 //   npm run reset-password -- ada --make-admin --activate
+//   npm run reset-password -- ada --clear-2fa      # also switch off their two-factor sign-in
 //   echo 'new password here' | npm run reset-password -- ada --password-stdin
 //
 // Works while the server is running. Uses DATA_DIR like the server does (default ./data).
@@ -74,9 +75,10 @@ function askHidden(prompt) {
   db.exec('BEGIN');
   db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash, target.id);
   if (flag('--make-admin')) db.prepare("UPDATE users SET role='admin' WHERE id=?").run(target.id);
+  if (flag('--clear-2fa')) db.prepare("UPDATE users SET totp_enabled=0, totp_secret='', totp_last_step=0, recovery_codes='[]' WHERE id=?").run(target.id);
   if (flag('--activate')) db.prepare('UPDATE users SET active=1 WHERE id=?').run(target.id);
   db.prepare('DELETE FROM sessions WHERE user_id=?').run(target.id);
   db.exec('COMMIT');
-  console.log(`Password changed for ${target.username}${flag('--make-admin') ? ' (now an admin)' : ''}${flag('--activate') ? ' (account re-activated)' : ''}. Their sessions were ended.`);
+  console.log(`Password changed for ${target.username}${flag('--make-admin') ? ' (now an admin)' : ''}${flag('--activate') ? ' (account re-activated)' : ''}${flag('--clear-2fa') ? ' (two-factor sign-in switched off)' : ''}. Their sessions were ended.`);
   if (!target.active && !flag('--activate')) console.log('Note: this account is inactive and still cannot sign in. Add --activate to enable it.');
 })().catch((e) => fail(e.message));

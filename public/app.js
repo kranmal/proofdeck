@@ -1002,8 +1002,75 @@ function renderAuth(needsSetup, message = '') {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+      if (data.needs2fa) { renderSecondFactor(data.ticket); return; }
       await startApp(data.user);
     } catch (err) { $('#auth-err').textContent = err.message; btn.disabled = false; f.password.select(); }
+  };
+}
+
+// Account dialog section: turn the authenticator app on or off. Buttons here are not part of the account form.
+function mountTwoFactor(box) {
+  const paint = (stage = 'idle', extra = {}) => {
+    const on = STATE.user.totp;
+    if (stage === 'codes') {
+      box.innerHTML = `<p><b>Two-factor sign-in is on.</b> Save these recovery codes somewhere safe. Each works once if you lose your phone, and they are not shown again.</p>
+        <pre class="recovery">${extra.codes.map(esc).join('\n')}</pre>
+        <p><button type="button" class="btn small ghost" data-tf="copy">${withIcon('copy', 'Copy codes')}</button> <button type="button" class="btn small primary" data-tf="done">I have saved them</button></p>`;
+    } else if (stage === 'setup') {
+      box.innerHTML = `<p>1. In your authenticator app (Google Authenticator, Authy, 1Password, Aegis…) add an account with this key, or open the link on your phone:</p>
+        <p><code class="secretkey">${esc(extra.secret.match(/.{1,4}/g).join(' '))}</code> <a class="btn small ghost" href="${esc(extra.uri)}">Open in app</a></p>
+        <label>2. Enter the 6-digit code it shows<input data-tf-code inputmode="numeric" autocomplete="one-time-code" maxlength="7"></label>
+        <p><button type="button" class="btn small primary" data-tf="enable">Turn on</button> <button type="button" class="btn small ghost" data-tf="cancel">Cancel</button></p>`;
+    } else if (stage === 'off') {
+      box.innerHTML = `<p>Enter your password and a current code (or a recovery code) to turn it off.</p>
+        <label>Password<input data-tf-pw type="password" autocomplete="current-password"></label>
+        <label>Code<input data-tf-code autocomplete="one-time-code" maxlength="20"></label>
+        <p><button type="button" class="btn small danger" data-tf="disable">Turn off</button> <button type="button" class="btn small ghost" data-tf="cancel">Cancel</button></p>`;
+    } else {
+      box.innerHTML = on
+        ? `<p>${pill('On')} Signing in needs your password and a code from your authenticator app.</p><p><button type="button" class="btn small ghost" data-tf="off">Turn off…</button></p>`
+        : `<p class="muted">Add a code from an authenticator app to your password, so a stolen password alone is not enough.</p><p><button type="button" class="btn small ghost" data-tf="setup">${withIcon('key', 'Set up')}</button></p>`;
+    }
+  };
+  box.onclick = async (e) => {
+    const b = e.target.closest('[data-tf]');
+    if (!b) return;
+    e.preventDefault(); e.stopPropagation();
+    try {
+      const k = b.dataset.tf, code = () => box.querySelector('[data-tf-code]').value;
+      if (k === 'setup') paint('setup', await api('POST', '/api/auth/2fa/setup', {}));
+      else if (k === 'enable') { const r = await api('POST', '/api/auth/2fa/enable', { code: code() }); STATE.user.totp = true; paint('codes', { codes: r.recoveryCodes }); }
+      else if (k === 'copy') { await navigator.clipboard.writeText([...box.querySelectorAll('.recovery')].map((x) => x.textContent).join('\n')); toast('Recovery codes copied'); }
+      else if (k === 'off') paint('off');
+      else if (k === 'disable') { await api('POST', '/api/auth/2fa/disable', { password: box.querySelector('[data-tf-pw]').value, code: code() }); STATE.user.totp = false; toast('Two-factor sign-in is off'); paint(); }
+      else paint();
+    } catch (err) { fail(err); }
+  };
+  paint();
+}
+
+// Second step of signing in when the account has an authenticator app.
+function renderSecondFactor(ticket, message = '') {
+  const a = $('#auth');
+  a.innerHTML = `<form class="auth-card" id="auth-form2">
+    <div class="brand"><span class="logo" aria-hidden="true"></span>Proofdeck</div>
+    <h1>Two-factor code</h1>
+    <p class="muted">Open your authenticator app and enter the 6-digit code for Proofdeck. Lost your phone? Use one of your recovery codes instead.</p>
+    <label>Code<input name="code" autocomplete="one-time-code" inputmode="text" required maxlength="20" autofocus></label>
+    <p class="warn" id="auth-err" role="alert">${esc(message)}</p>
+    <button class="btn primary" type="submit">Verify</button>
+    <p class="muted authalt"><a href="#" id="back-login">Back to sign in</a></p></form>`;
+  $('#back-login').onclick = (e) => { e.preventDefault(); location.reload(); };
+  $('#auth-form2').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target, btn = $('button', f);
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/auth/login/2fa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket, code: f.code.value }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { if (res.status === 401 && /timed out|Too many/.test(data.error || '')) { $('#auth-err').textContent = data.error; btn.hidden = true; return; } throw new Error(data.error || `Request failed (${res.status})`); }
+      await startApp(data.user);
+    } catch (err) { $('#auth-err').textContent = err.message; btn.disabled = false; f.code.select(); }
   };
 }
 
@@ -1031,6 +1098,8 @@ function openAccount() {
     <h3>Email</h3>
     <label>Email address<small>Used for notifications and to reset your password.</small><input type="email" name="email" value="${esc(u.email || '')}" maxlength="254" autocomplete="email"></label>
     <label>Email me about my notifications<select name="notify_email">${[['instant', 'Straight away'], ['daily', 'Once a day, as a summary'], ['off', 'Never (I will check in the app)']].map(([v, l]) => `<option value="${v}"${u.notify_email === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+    <h3>Two-factor sign-in</h3>
+    <div id="twofa"></div>
     <h3>Time zone</h3>
     <label>Your time zone<small>Decides what counts as overdue or due today for you, and when your daily emails go out.</small>
       <select name="timezone"><option value="">Server default (UTC)</option>${(Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : []).map((z) => `<option${u.timezone === z ? ' selected' : ''}>${esc(z)}</option>`).join('')}</select></label>
@@ -1060,6 +1129,7 @@ function openAccount() {
         } catch (err) { $('#sessions', form).innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
       };
       paintSessions();
+      mountTwoFactor($('#twofa', form));
       $('#history', form).addEventListener('toggle', async (e) => {
         if (!e.target.open || $('#hist', form).dataset.done) return;
         try {
@@ -1211,8 +1281,16 @@ async function viewUsers() {
         <label>Email<input name="email" type="email" value="${esc(u.email || '')}" maxlength="254" autocomplete="off"></label>
         <label>Role${roleSelect(u.role)}</label>
         <label class="check"><input type="checkbox" name="active"${u.active ? ' checked' : ''}> Account is active <small>(inactive users cannot sign in)</small></label>
+        ${u.totp ? `<p>${pill('On')} Two-factor sign-in. <button type="button" class="btn small ghost" data-reset2fa>Reset it</button> <small class="muted">for someone who lost their authenticator</small></p>` : ''}
         <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Save</button></footer>`,
-        async (fd) => { await api('PUT', `/api/users/${u.id}`, { display_name: fd.get('display_name'), email: fd.get('email'), role: fd.get('role'), active: fd.get('active') === 'on' }); toast('User saved'); await done(); });
+        async (fd) => { await api('PUT', `/api/users/${u.id}`, { display_name: fd.get('display_name'), email: fd.get('email'), role: fd.get('role'), active: fd.get('active') === 'on' }); toast('User saved'); await done(); },
+        (form) => {
+          const b2 = form.querySelector('[data-reset2fa]');
+          if (b2) b2.onclick = async () => {
+            if (!confirm(`Switch off two-factor sign-in for ${u.username}? They can set it up again after signing in with their password.`)) return;
+            try { await api('POST', `/api/users/${u.id}/2fa-reset`, {}); toast('Two-factor sign-in reset'); dlg.close(); await done(); } catch (err) { fail(err); }
+          };
+        });
     } else if (b.dataset.act === 'reset') {
       openDialog(`<h2>Reset password for ${esc(u.username)}</h2>
         <label>New password<small>They are signed out everywhere and must use this one.</small><input name="password" type="password" minlength="8" required autocomplete="new-password"></label>

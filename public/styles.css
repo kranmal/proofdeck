@@ -454,3 +454,5 @@ body.viewer [data-act^="add-"], body.viewer [data-act^="del-"], body.viewer [dat
 #history { margin: 10px 0; }
 #history summary { cursor: pointer; }
 .viewsbar { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.recovery { background: var(--code-bg, #f3f4f8); padding: 10px 12px; border-radius: 6px; columns: 2; font-size: 13px; }
+.secretkey { font-size: 15px; letter-spacing: 1px; word-break: break-all; }
