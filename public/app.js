@@ -90,7 +90,7 @@ function toast(html, isError, ms) {
 }
 const fail = (e) => toast(esc(e.message || e), true);
 // After a delete: say where it went and offer to bring it back.
-const KIND_PATH = { case: 'cases', cycle: 'cycles', bug: 'bugs' };
+const KIND_PATH = { case: 'cases', cycle: 'cycles', bug: 'bugs', execution: 'run' };
 const deletedToast = (what, trashId) => {
   if (!trashId) return toast(`${esc(what)} deleted`);
   toast(`${esc(what)} moved to Trash. <button type="button" class="linkbtn" data-undo="${trashId}">Undo</button>`, false, 12000);
@@ -1259,7 +1259,7 @@ async function viewWebhooks() {
 async function viewTrash() {
   const { items, days } = await api('GET', `/api/projects/${STATE.pid}/trash`);
   const admin = STATE.user.role === 'admin';
-  const KIND = { case: 'Test case', cycle: 'Test cycle', bug: 'Bug' };
+  const KIND = { case: 'Test case', cycle: 'Test cycle', bug: 'Bug', execution: 'Test run' };
   view.innerHTML = `
     <header class="head"><h1>Trash</h1>${admin && items.length ? `<button class="btn ghost" data-act="empty">${withIcon('trash', 'Empty trash')}</button>` : ''}</header>
     <p class="meta">Deleted test cases, cycles and bugs stay here for ${days} days and can be restored with their steps, comments, files and results.</p>
@@ -2185,7 +2185,7 @@ async function viewCycle(id) {
       ${c.executions.map((e) => `<tr><td><a href="#/run/${e.id}"><span class="key">${esc(e.case_key)}</span> ${esc(e.case_title)}</a>${e.iteration ? ` <span class="muted">· data set ${e.iteration}: ${esc(e.iteration_label)}</span>` : ''}</td><td>${pill(e.status)}</td>
         <td class="num">${e.steps_done}/${e.step_count}</td><td class="num">${e.bug_count || ''}</td>${c.executions.some((x) => x.duration_ms > 0) ? `<td class="num muted">${fmtMs(e.duration_ms)}</td>` : ''}<td>${userSelect(`data-assign="${e.id}" aria-label="Assignee for ${esc(e.case_key)}"`, e.assignee_id, e.assignee_name)}</td>
         <td class="muted">${e.executed_by_name ? esc(e.executed_by_name) + ' · ' : ''}${fmtDate(e.executed_at)}</td>
-        <td class="num"><a class="btn small ghost" href="#/run/${e.id}">${icon('play')}<span>${e.status === 'Not Executed' ? 'Run' : 'Open'}</span></a></td></tr>`).join('')}
+        <td class="num"><button type="button" class="icon small danger" data-rm-run="${e.id}" data-key="${esc(e.case_key)}" title="Remove this run from the cycle" aria-label="Remove ${esc(e.case_key)} from the cycle">${icon('trash')}</button> <a class="btn small ghost" href="#/run/${e.id}">${icon('play')}<span>${e.status === 'Not Executed' ? 'Run' : 'Open'}</span></a></td></tr>`).join('')}
       </tbody></table>` : `<p class="empty">${c.adhoc ? 'No standalone runs yet. Press “Run” on a test case.' : 'This cycle has no test cases yet.'}</p>`}</section>`;
   view.onchange = async (e) => {
     const sel = e.target.closest('[data-assign]');
@@ -2194,6 +2194,16 @@ async function viewCycle(id) {
     catch (err) { fail(err); router(); }
   };
   view.onclick = async (e) => {
+    const rm = e.target.closest('[data-rm-run]');
+    if (rm) {
+      try {
+        if (!confirm(`Remove ${rm.dataset.key} from ${c.key}? Its result and screenshots go to Trash, where you can restore them.`)) return;
+        const r = await api('DELETE', `/api/executions/${rm.dataset.rmRun}`);
+        await router();
+        deletedToast(`${rm.dataset.key} run`, r.trashId);
+      } catch (err) { fail(err); }
+      return;
+    }
     const act = e.target.closest('[data-act]')?.dataset.act;
     try {
       if (act === 'delete') {

@@ -110,3 +110,31 @@ test('permissions and housekeeping: viewers cannot restore, only admins delete f
   assert.equal((await a.del('/api/projects/1/trash')).data.count, n);
   assert.equal((await trash()).length, 0);
 });
+
+test('a single run removed from a cycle can be restored with its results, files, comments and bug links', async () => {
+  const cy = (await a.post('/api/projects/1/cycles', { name: 'Run trash', caseIds: [1, 3] })).data;
+  const run = (await a.get(`/api/cycles/${cy.id}`)).data.executions[0];
+  const ex = (await a.get(`/api/executions/${run.id}`)).data;
+  await a.ok('PUT', `/api/step-results/${ex.steps[0].id}`, { status: 'Fail', actual: 'x' });
+  await a.ok('POST', `/api/step-results/${ex.steps[0].id}/attachments`, { filename: 's.png', mime: 'image/png', data: png });
+  await a.ok('POST', `/api/executions/${run.id}/comments`, { body: 'note' });
+  const bug = (await a.post(`/api/step-results/${ex.steps[0].id}/bug`, { title: 'From run' })).data;
+  const del = await a.ok('DELETE', `/api/executions/${run.id}`);
+  assert.ok(del.trashId);
+  assert.equal((await a.get(`/api/bugs/${bug.id}`)).data.execution_id, null, 'the bug is detached as before');
+  const item = (await trash()).find((x) => x.kind === 'execution');
+  assert.match(item.label, /^Run of /);
+  const r = await a.ok('POST', `/api/trash/${item.id}/restore`, {});
+  assert.deepEqual([r.kind, r.id], ['execution', run.id]);
+  const back = (await a.get(`/api/executions/${run.id}`)).data;
+  assert.equal(back.cycle_id, cy.id);
+  assert.equal(back.steps[0].status, 'Fail');
+  assert.equal(back.steps[0].attachments.length, 1);
+  assert.equal(back.comments.length, 1);
+  assert.equal((await a.get(`/api/bugs/${bug.id}`)).data.execution_id, run.id, 'and the bug points at it again');
+  // restoring into a cycle that is gone fails clearly instead of corrupting anything
+  await a.ok('DELETE', `/api/executions/${run.id}`);
+  await a.ok('DELETE', `/api/cycles/${cy.id}`);
+  const orphan = (await trash()).find((x) => x.kind === 'execution');
+  assert.equal((await a.post(`/api/trash/${orphan.id}/restore`, {})).status, 409);
+});

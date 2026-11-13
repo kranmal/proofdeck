@@ -13,6 +13,7 @@ const KINDS = {
   case: { table: 'cases', label: (r) => `${r.key} ${r.title}`, field: 'case' },
   cycle: { table: 'cycles', label: (r) => `${r.key} ${r.name}`, field: 'cycle' },
   bug: { table: 'bugs', label: (r) => `${r.key} ${r.title}`, field: 'bug' },
+  execution: { table: 'executions', label: (r) => `Run of ${r.case_key} ${r.case_title}`, field: null },
 };
 // Rows that point at an owner by (type, id) instead of a foreign key.
 const POLY = {
@@ -57,14 +58,14 @@ function install(ctx) {
         for (const k of q(`SELECT * FROM ${p.table} WHERE owner_type=? AND owner_id=?`).all(p.type, row.id)) walk(p.table, k, { col: 'owner_id', parent: table });
       }
       const fieldKind = Object.values(KINDS).find((k) => k.table === table);
-      if (fieldKind) {
+      if (fieldKind && fieldKind.field) {
         for (const v of q('SELECT v.* FROM custom_values v JOIN custom_fields f ON f.id=v.field_id WHERE f.entity=? AND v.entity_id=?').all(fieldKind.field, row.id)) {
           rows.push({ t: 'custom_values', row: pack(v), poly: { col: 'entity_id', parent: table } });
         }
       }
     };
     walk(spec.table, root);
-    const projectId = root.project_id;
+    const projectId = root.project_id !== undefined ? root.project_id : q('SELECT project_id FROM cycles WHERE id=?').get(root.cycle_id).project_id;
     return Number(q('INSERT INTO trash(kind, project_id, label, deleted_by, deleted_at, payload) VALUES (?,?,?,?,?,?)')
       .run(kind, projectId, spec.label(root).slice(0, 300), user ? user.id : null, now(), JSON.stringify({ root: { t: spec.table, id: root.id }, rows, nulls })).lastInsertRowid);
   }

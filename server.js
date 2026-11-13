@@ -1150,10 +1150,11 @@ route('POST', '/api/cycles/:id/assign', ({ params, body, user }) => tx(() => {
   return { count: [...got.values()].reduce((a, b) => a + b, 0), perUser: [...got].map(([userId, n]) => ({ userId, count: n })) };
 }));
 
-route('DELETE', '/api/executions/:id', ({ params }) => tx(() => {
+route('DELETE', '/api/executions/:id', ({ params, user }) => tx(() => {
+  const trashId = ctx.trash.capture('execution', params.id, user);
   deleteStepAttachments('e.id=?', params.id);
   q('DELETE FROM executions WHERE id=?').run(params.id);
-  return { ok: true };
+  return { ok: true, trashId };
 }));
 
 route('PUT', '/api/step-results/:id', ({ params, body, user }) => {

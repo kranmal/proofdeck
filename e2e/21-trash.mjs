@@ -38,6 +38,15 @@ await go('#/trash'); await sleep(500);
 await js(`window.confirm = () => true`);
 await click('[data-act=purge]'); await sleep(800);
 check('purge removes it for good', (await api('/api/projects/1/trash')).items.length === 0);
+// ---- remove one run from a cycle, undo
+const cyc = (await api('/api/projects/1/cycles')).find((c) => !c.adhoc);
+const before = (await api(`/api/cycles/${cyc.id}`)).executions.length;
+await go(`#/cycles/${cyc.id}`); await sleep(600);
+await js(`window.confirm = () => true`);
+await click('[data-rm-run]'); await sleep(900);
+check('removing a run drops it and offers Undo', (await api(`/api/cycles/${cyc.id}`)).executions.length === before - 1 && await visible('#toast [data-undo]'));
+await click('#toast [data-undo]'); await sleep(1000);
+check('Undo puts the run back', (await api(`/api/cycles/${cyc.id}`)).executions.length === before);
 check('no console errors', t.errors.filter((e) => !/status of (401|403|400|404)/.test(e)).length === 0, t.errors.join(' | '));
 process.exit(t.finish() ? 1 : 0);
 function location_ok(h, want) { return h === want; }
