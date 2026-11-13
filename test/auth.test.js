@@ -18,7 +18,7 @@ test('everything is locked until someone signs in, except the app shell and /api
   assert.equal((await anon.post('/api/projects', { name: 'x', key: 'XX' })).status, 401);
   assert.equal((await anon.get('/')).status, 200);
   const me = await anon.get('/api/auth/me');
-  assert.deepEqual(me.data, { user: null, needsSetup: true, resetAvailable: false });
+  assert.deepEqual(me.data, { user: null, needsSetup: true, resetAvailable: false, sso: { enabled: false } });
 });
 
 test('first-run setup creates the admin once, with a hardened session cookie', async () => {
