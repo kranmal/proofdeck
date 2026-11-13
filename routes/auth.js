@@ -10,7 +10,7 @@ const limiter = new auth.Limiter();
 const ROLES = ['admin', 'tester', 'viewer'];
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const tokenOf = (req) => auth.parseCookies(req.headers.cookie)[auth.COOKIE] || '';
-const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role, email: u.email || '', notify_email: u.notify_email || 'instant' };
+const publicUser = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, role: u.role, email: u.email || '', notify_email: u.notify_email || 'instant', timezone: u.timezone || '' };
 
 // Returns the signed-in user (with _sid, the session hash) or null.
 function userFromRequest(req) {
@@ -124,6 +124,11 @@ function install(c) {
     if (body.notify_email !== undefined) {
       if (!['instant', 'daily', 'off'].includes(body.notify_email)) throw new HttpError(400, 'Choose instant, daily or off');
       sets.push('notify_email=?'); vals.push(body.notify_email);
+    }
+    if (body.timezone !== undefined) {
+      const tz = str(body.timezone).trim();
+      if (tz && !ctx.validZone(tz)) throw new HttpError(400, 'That time zone is not recognised');
+      sets.push('timezone=?'); vals.push(tz);
     }
     if (sets.length) q(`UPDATE users SET ${sets.join(',')} WHERE id=?`).run(...vals, user.id);
     return { user: publicUser(q('SELECT * FROM users WHERE id=?').get(user.id)) };

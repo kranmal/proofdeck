@@ -171,10 +171,12 @@ function install(ctx) {
   // A digest goes out when it is after the chosen hour and at least ~a day since the last one (survives restarts).
   const DIGEST_MS = process.env.NOTIFY_DIGEST_MS !== undefined ? Number(process.env.NOTIFY_DIGEST_MS) : 23 * 3600000;
   function digestIfDue() {
-    const d = new Date();
-    const last = Date.parse(getSetting('digest_last_at') || '') || 0;
-    if (!smtpConfig() || Date.now() - last < DIGEST_MS || d.getHours() < Number(getSetting('digest_hour') || 8)) return;
-    for (const u of q("SELECT id, email, digest_cursor FROM users WHERE active=1 AND email!='' AND notify_email='daily'").all()) {
+    if (!smtpConfig()) return;
+    const startHour = Number(getSetting('digest_hour') || 8);
+    for (const u of q("SELECT id, email, digest_cursor, timezone, digest_last_at FROM users WHERE active=1 AND email!='' AND notify_email='daily'").all()) {
+      // Each person's summary goes out after the chosen hour on their own clock, about once a day.
+      if (Date.now() - (Date.parse(u.digest_last_at) || 0) < DIGEST_MS || ctx.localNow(u.timezone).hour < startHour) continue;
+      q('UPDATE users SET digest_last_at=? WHERE id=?').run(new Date().toISOString(), u.id);
       const rows = q('SELECT id, title, body, link, created_at FROM notifications WHERE user_id=? AND id>? ORDER BY id LIMIT 200').all(u.id, u.digest_cursor);
       if (!rows.length) continue;
       const base = notifier.publicUrl();
@@ -185,22 +187,25 @@ function install(ctx) {
         q('UPDATE users SET digest_cursor=? WHERE id=?').run(rows[rows.length - 1].id, u.id);
       });
     }
-    setSetting('digest_last_at', new Date().toISOString());
   }
 
   // Once a day (after the digest hour): tell people who still have test runs in a cycle that is due soon or overdue.
-  const DUE_MS = process.env.NOTIFY_DUE_MS !== undefined ? Number(process.env.NOTIFY_DUE_MS) : 23 * 3600000;
+  const DUE_MS = process.env.NOTIFY_DUE_MS !== undefined ? Number(process.env.NOTIFY_DUE_MS) : 3600000; // re-scan hourly: people in different zones reach their hour at different times
   function dueIfDue() {
-    const d = new Date();
     const last = Date.parse(getSetting('due_last_at') || '') || 0;
-    if (Date.now() - last < DUE_MS || d.getHours() < Number(getSetting('digest_hour') || 8)) return;
-    const day = d.toISOString().slice(0, 10), tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    if (Date.now() - last < DUE_MS) return;
+    const startHour = Number(getSetting('digest_hour') || 8);
+    const zones = new Map(q('SELECT id, timezone FROM users').all().map((u) => [u.id, u.timezone]));
     const rows = q(`SELECT e.assignee_id AS uid, c.id AS cycle_id, c.key, c.name, c.due_date, c.project_id, COUNT(*) AS n
       FROM executions e JOIN cycles c ON c.id=e.cycle_id
-      WHERE c.adhoc=0 AND c.due_date!='' AND c.due_date<=? AND e.assignee_id IS NOT NULL AND e.status IN ('Not Executed','In Progress') GROUP BY e.assignee_id, c.id`).all(tomorrow);
+      WHERE c.adhoc=0 AND c.due_date!='' AND e.assignee_id IS NOT NULL AND e.status IN ('Not Executed','In Progress') GROUP BY e.assignee_id, c.id`).all();
     for (const r of rows) {
+      // "Today" is the assignee's own date, and they are told after the chosen hour on their clock.
+      const now = ctx.localNow(zones.get(r.uid));
+      const day = now.day, tomorrow = new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+      if (now.hour < startHour || r.due_date > tomorrow) continue;
       const link = `#/cycles/${r.cycle_id}`;
-      if (q("SELECT 1 FROM notifications WHERE user_id=? AND kind='due' AND link=? AND substr(created_at,1,10)=?").get(r.uid, link, day)) continue;
+      if (q("SELECT 1 FROM notifications WHERE user_id=? AND kind='due' AND link=? AND created_at>?").get(r.uid, link, new Date(Date.now() - 20 * 3600000).toISOString())) continue;
       const when = r.due_date < day ? `is overdue (was due ${r.due_date})` : r.due_date === day ? 'is due today' : 'is due tomorrow';
       notifier.notify(r.uid, { kind: 'due', title: `${r.key} ${r.name} ${when}`, body: `${r.n} of your test run${r.n === 1 ? ' is' : 's are'} still to do.`, link, projectId: r.project_id });
     }

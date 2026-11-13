@@ -205,6 +205,8 @@ const USER_REF = 'INTEGER REFERENCES users(id) ON DELETE SET NULL';
 // Standalone ("ad hoc") runs live in one cycle per project.
 addColumn('cycles', 'adhoc', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('users', 'email', "TEXT NOT NULL DEFAULT ''");
+addColumn('users', 'timezone', "TEXT NOT NULL DEFAULT ''"); // IANA name, '' = server default
+addColumn('users', 'digest_last_at', "TEXT NOT NULL DEFAULT ''");
 addColumn('users', 'notify_email', "TEXT NOT NULL DEFAULT 'instant'"); // instant | daily | off
 addColumn('users', 'digest_cursor', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('cycles', 'created_by', USER_REF);
@@ -252,7 +254,16 @@ function cleanDates(body, current = {}) {
   if (start_date && due_date && start_date > due_date) throw new HttpError(400, 'The due date cannot be before the start date');
   return { start_date, due_date };
 }
-const today = () => new Date().toISOString().slice(0, 10);
+// "Today" and "this hour" for a person. tz is an IANA name; blank means the server (UTC date, server clock hour).
+const validZone = (tz) => { try { new Intl.DateTimeFormat('en-CA', { timeZone: tz }); return true; } catch { return false; } };
+function localNow(tz, at = new Date()) {
+  if (!tz) return { day: at.toISOString().slice(0, 10), hour: at.getHours() };
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit' }).formatToParts(at).map((x) => [x.type, x.value]));
+  return { day: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) };
+}
+// The signed-in person's zone while a request handler runs (handlers read it before their first await).
+let requestZone = '';
+const today = () => localNow(requestZone).day;
 const withOverdue = (c) => ({ ...c, overdue: !!c.due_date && !c.adhoc && c.due_date < today() && (c.not_executed + c.in_progress) > 0 });
 
 // A plan id belonging to the project, or null for "no plan".
@@ -1355,7 +1366,7 @@ seed();
 versions.backfill(); // the demo cases created by seed() above
 
 // ---------- feature modules ----------
-const ctx = { security, route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links, notifier, addColumn, syncHooks, fieldsApi, versions,
+const ctx = { localNow, validZone, security, route, q, tx, db, now, str, need, HttpError, Raw, nextKey, checkEnum, update, assigneeOrNull, normFolder, attachmentsOf, DATA_DIR, CYCLE_COUNTS, sendTable, links, notifier, addColumn, syncHooks, fieldsApi, versions,
   snapshotCase, rollup, insertCase, saveAttachment, setAutomationKey, autoKeyTaken, planOrNull };
 secret.init(DATA_DIR);
 securityRoutes.install(ctx);
@@ -1487,6 +1498,7 @@ const server = http.createServer(async (req, res) => {
       const params = {};
       r.keys.forEach((k, i) => { params[k] = Number(m[i + 1]); });
       const body = req.method === 'GET' || req.method === 'DELETE' ? {} : r.opts.raw ? await readRaw(req) : await readBody(req);
+      requestZone = (user && user.timezone) || '';
       const out = await r.handler({ params, body, query: url.searchParams, user, req, token: apiToken });
       security.audit({ method: req.method, pattern: r.pattern, path: p, params, body, user, token: apiToken, req, out });
       if (out instanceof Raw) return send(res, 200, out.body, out.headers);

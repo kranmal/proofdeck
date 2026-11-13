@@ -985,6 +985,10 @@ function openAccount() {
     <h3>Email</h3>
     <label>Email address<small>Used for notifications and to reset your password.</small><input type="email" name="email" value="${esc(u.email || '')}" maxlength="254" autocomplete="email"></label>
     <label>Email me about my notifications<select name="notify_email">${[['instant', 'Straight away'], ['daily', 'Once a day, as a summary'], ['off', 'Never (I will check in the app)']].map(([v, l]) => `<option value="${v}"${u.notify_email === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+    <h3>Time zone</h3>
+    <label>Your time zone<small>Decides what counts as overdue or due today for you, and when your daily emails go out.</small>
+      <select name="timezone"><option value="">Server default (UTC)</option>${(Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : []).map((z) => `<option${u.timezone === z ? ' selected' : ''}>${esc(z)}</option>`).join('')}</select></label>
+    <p><button type="button" class="btn ghost small" data-act="browser-tz">Use my browser's time zone</button></p>
     <h3>Change password</h3>
     <label>Current password<input type="password" name="current" autocomplete="current-password"></label>
     <label>New password<small>At least 8 characters. Your other sessions are signed out. Leave both blank to keep your password.</small><input type="password" name="next" autocomplete="new-password" minlength="8"></label>
@@ -995,7 +999,7 @@ function openAccount() {
     async (fd) => {
       const cur = fd.get('current'), nxt = fd.get('next');
       if ((cur && !nxt) || (!cur && nxt)) throw new Error('To change your password, fill in both password fields');
-      const r = await api('PUT', '/api/auth/profile', { email: fd.get('email'), notify_email: fd.get('notify_email') });
+      const r = await api('PUT', '/api/auth/profile', { email: fd.get('email'), notify_email: fd.get('notify_email'), timezone: fd.get('timezone') });
       Object.assign(STATE.user, r.user);
       if (cur) await api('POST', '/api/auth/password', { current: cur, next: nxt });
       toast(cur ? 'Saved. Password changed' : 'Saved');
@@ -1020,6 +1024,12 @@ function openAccount() {
       });
       form.addEventListener('click', async (e) => {
         try {
+          if (e.target.closest('[data-act=browser-tz]')) {
+            const z = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const sel = form.querySelector('[name=timezone]');
+            if (![...sel.options].some((o) => o.value === z)) sel.add(new Option(z, z));
+            sel.value = z; return;
+          }
           const kill = e.target.closest('[data-kill]');
           if (kill) { await api('DELETE', `/api/auth/sessions/${kill.dataset.kill}`); toast('Signed out'); await paintSessions(); return; }
           if (e.target.closest('[data-kill-others]')) { const r = await api('POST', '/api/auth/sessions/revoke-others', {}); toast(`Signed out ${r.count} other device${r.count === 1 ? '' : 's'}`); await paintSessions(); return; }
