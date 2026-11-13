@@ -42,6 +42,7 @@ All of that user's sessions are ended.
   (pre-filled from the steps up to the failure, including which called case each came from and the data set used).
 - **Screenshot annotator** (arrow, box, pen, text) and attachments: images, PDF, text/log, CSV, JSON, ZIP, MP4, WebM.
 - **Jira Cloud, Jira Server / Data Center and GitHub**: send a bug as an issue (Jira gets the attachments; GitHub's API cannot take images).
+- **Linear, Azure DevOps and GitLab**: the same "send a bug as an issue" with two-way status sync (polled; no webhooks). Azure DevOps and GitLab take the screenshots; Linear leaves them in Proofdeck. Linear, Azure DevOps and GitLab are checked only against local fake servers, so run `npm run check-integration` with real credentials before relying on them: `LINEAR_TOKEN=… -- linear --team ENG`, `AZURE_TOKEN=… -- azure --base https://dev.azure.com/ORG --project P`, `GITLAB_TOKEN=… -- gitlab --project group/project`.
   Optional **two-way status sync**: closing the issue resolves the bug (checked every few minutes, or instantly through a webhook) and,
   if you switch it on, resolving the bug closes the issue. Server / Data Center uses a personal access token and REST v2.
 - **Your dashboard and weekly email**: the Overview has a Waiting for you card (your open runs with overdue marks, bugs, reviews), your last 14 days and the team by week. Turn on the Monday summary email in your account menu (sent after the daily-summary hour, on your own Monday); “Send me one now” previews it.

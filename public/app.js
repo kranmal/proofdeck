@@ -555,7 +555,7 @@ async function openAnnotator(attId, onSaved) {
 }
 
 // ---------- integrations ----------
-const KIND_LABEL = { github: 'GitHub', jira: 'Jira' };
+const KIND_LABEL = { github: 'GitHub', jira: 'Jira', linear: 'Linear', azure: 'Azure DevOps', gitlab: 'GitLab' };
 const safeUrl = (u) => (/^https?:\/\//i.test(String(u)) ? String(u) : '#');
 
 async function viewIntegrations() {
@@ -568,12 +568,12 @@ async function viewIntegrations() {
   const head = (kind, title, blurb) => `<div class="int-head"><h2>${icon('plug')} ${title}</h2>${by[kind] ? pill('Connected') : '<span class="pill">Not set up</span>'}</div><p class="muted">${blurb}</p>`;
   const sv = (kind, k, d) => (by[kind] && by[kind].config.sync && by[kind].config.sync[k] !== undefined ? by[kind].config.sync[k] : d);
   const syncBlock = (kind) => `<h3>Keep bug status in step</h3>
-    <label class="check"><input type="checkbox" data-s="pull"${sv(kind, 'pull', true) ? ' checked' : ''}> When the issue changes, update the bug <small>(checked every few minutes, or instantly with a webhook)</small></label>
+    <label class="check"><input type="checkbox" data-s="pull"${sv(kind, 'pull', true) ? ' checked' : ''}> When the issue changes, update the bug <small>(checked every few minutes${['github', 'jira'].includes(kind) ? ', or instantly with a webhook' : ''})</small></label>
     <label class="check"><input type="checkbox" data-s="push"${sv(kind, 'push', false) ? ' checked' : ''}> When someone changes the bug’s status in Proofdeck, close or reopen the issue</label>
     <div class="two"><label>When the issue is closed, set the bug to<select data-s="onClose">${['Resolved', 'Closed'].map((o) => `<option${sv(kind, 'onClose', 'Resolved') === o ? ' selected' : ''}>${o}</option>`).join('')}</select></label>
       <label>When it is reopened, set the bug to<select data-s="onReopen">${['Open', 'In Progress'].map((o) => `<option${sv(kind, 'onReopen', 'Open') === o ? ' selected' : ''}>${o}</option>`).join('')}</select></label></div>
     ${by[kind] ? `<div class="int-actions"><button type="button" class="btn ghost small" data-act="syncall" data-kind="${kind}">${withIcon('rotate', 'Sync all bugs now')}</button>
-      <button type="button" class="btn ghost small" data-act="webhook" data-kind="${kind}">Instant updates (webhook)…</button></div><div class="webhook" data-hook="${kind}" hidden></div>` : ''}`;
+      ${['github', 'jira'].includes(kind) ? `<button type="button" class="btn ghost small" data-act="webhook" data-kind="${kind}">Instant updates (webhook)…</button>` : ''}</div><div class="webhook" data-hook="${kind}" hidden></div>` : ''}`;
   const actions = (kind) => `<div class="int-actions"><button type="button" class="btn ghost" data-act="test" data-kind="${kind}">Test connection</button>
     <button type="button" class="btn primary" data-act="save" data-kind="${kind}">${withIcon('save', 'Save')}</button>
     ${by[kind] ? `<button type="button" class="btn danger" data-act="remove" data-kind="${kind}">${withIcon('trash', 'Remove')}</button>` : ''}
@@ -589,7 +589,17 @@ async function viewIntegrations() {
       <div class="form"><label>Edition<select data-f="variant" id="jvariant"><option value="cloud"${val('jira', 'variant', 'cloud') !== 'server' ? ' selected' : ''}>Jira Cloud (atlassian.net)</option><option value="server"${val('jira', 'variant', 'cloud') === 'server' ? ' selected' : ''}>Jira Server / Data Center (self-hosted)</option></select></label>
         ${field('jira', 'base', 'Site URL', { hint: 'Must be https. Self-hosted example: https://jira.example.com (or with a context path like /jira).', ph: 'https://your-team.atlassian.net' })}<span id="jemail">${field('jira', 'email', 'Account email', { hint: 'Jira Cloud only.', ph: 'you@company.com' })}</span>
         ${field('jira', 'projectKey', 'Project key', { ph: 'PROJ' })}${field('jira', 'issueType', 'Issue type', { def: 'Bug' })}
-        ${field('jira', 'labels', 'Extra labels', { hint: 'Comma separated. “proofdeck” and a severity label are always added.' })}${field('jira', 'token', 'API token / personal access token', { type: 'password', ph: 'ATATT… or the token from your profile' })}</div>${syncBlock('jira')}${actions('jira')}</section>`;
+        ${field('jira', 'labels', 'Extra labels', { hint: 'Comma separated. “proofdeck” and a severity label are always added.' })}${field('jira', 'token', 'API token / personal access token', { type: 'password', ph: 'ATATT… or the token from your profile' })}</div>${syncBlock('jira')}${actions('jira')}</section>
+    <section class="card" data-card="linear">${head('linear', 'Linear', 'Create an issue in a team, with priority taken from the bug’s severity. Use a personal API key from Linear: <b>Settings → Security &amp; access → API</b>. Screenshots stay in Proofdeck (Linear needs a separate upload step).')}
+      <div class="form">${field('linear', 'teamKey', 'Team key', { hint: 'The short prefix of your issue numbers, e.g. ENG for ENG-123.', ph: 'ENG' })}${field('linear', 'token', 'API key', { type: 'password', ph: 'lin_api_…' })}
+        <div class="wide">${field('linear', 'base', 'API URL', { hint: 'Leave as it is.', def: 'https://api.linear.app' })}</div></div>${syncBlock('linear')}${actions('linear')}</section>
+    <section class="card" data-card="azure">${head('azure', 'Azure DevOps', 'Create a work item with its screenshots attached. Use a personal access token with <b>Work Items: Read &amp; write</b>. Status follows the work item type’s workflow (Proposed, In progress, Resolved, Completed).')}
+      <div class="form">${field('azure', 'base', 'Organisation URL', { hint: 'https://dev.azure.com/your-organisation, or your Azure DevOps Server collection URL.', ph: 'https://dev.azure.com/acme' })}${field('azure', 'project', 'Project', { ph: 'Shop' })}
+        ${field('azure', 'workItemType', 'Work item type', { hint: 'Bug (Agile, Scrum, CMMI) or Issue (Basic).', def: 'Bug' })}${field('azure', 'labels', 'Extra tags', { hint: 'Comma separated. “proofdeck” and a severity tag are always added.' })}
+        ${field('azure', 'token', 'Personal access token', { type: 'password' })}</div>${syncBlock('azure')}${actions('azure')}</section>
+    <section class="card" data-card="gitlab">${head('gitlab', 'GitLab issues', 'Create an issue with its screenshots embedded as images. Use a personal or project access token with the <b>api</b> scope. Works with gitlab.com and self-hosted GitLab.')}
+      <div class="form">${field('gitlab', 'project', 'Project', { hint: 'Its path, like group/project, or its numeric ID.', ph: 'acme/shop' })}${field('gitlab', 'labels', 'Labels', { hint: 'Comma separated. A severity label is added.', def: 'bug' })}
+        ${field('gitlab', 'token', 'Access token', { type: 'password', ph: 'glpat-…' })}<div class="wide">${field('gitlab', 'base', 'GitLab URL', { hint: 'Only change this for self-hosted GitLab, e.g. https://gitlab.example.com', def: 'https://gitlab.com' })}</div></div>${syncBlock('gitlab')}${actions('gitlab')}</section>`;
   const showEmail = () => { const j = $('#jvariant', view); if (j) $('#jemail', view).hidden = j.value === 'server'; };
   showEmail();
   view.onchange = (e) => { if (e.target.id === 'jvariant') showEmail(); };

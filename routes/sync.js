@@ -9,7 +9,7 @@ const crypto = require('node:crypto');
 const secret = require('../lib/secret');
 const { Limiter } = require('../lib/auth');
 
-const LABEL = { github: 'GitHub', jira: 'Jira' };
+const LABEL = { github: 'GitHub', jira: 'Jira', linear: 'Linear', azure: 'Azure DevOps', gitlab: 'GitLab' };
 const CLOSED = ['Resolved', 'Closed'];
 const extOf = (status) => (CLOSED.includes(status) ? 'done' : status === 'In Progress' ? 'progress' : 'open');
 
@@ -67,7 +67,7 @@ function install(ctx) {
       const row = getRow(bug.project_id, link.kind);
       if (!row || !syncOf(JSON.parse(row.config)).push) continue;
       const want = extOf(to);
-      if (link.kind === 'github' && want === 'progress') continue; // GitHub issues are simply open
+      if (['github', 'gitlab'].includes(link.kind) && want === 'progress') continue; // these issues are simply open or closed
       if (link.external_state === want) continue;
       setImmediate(async () => {
         try {
@@ -165,7 +165,7 @@ function install(ctx) {
   }, { public: true, raw: true });
 
   // Admin: the address to register and its secret (created on first request, kept encrypted).
-  for (const kind of Object.keys(CLIENTS)) {
+  for (const kind of ['github', 'jira']) { // only these two have a webhook receiver; the others are picked up by the regular check
     const info = (pid, regenerate) => {
       const row = need(getRow(pid, kind), `${LABEL[kind]} is not connected for this project`);
       let key = regenerate ? null : secretOf(row);

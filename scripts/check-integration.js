@@ -1,33 +1,44 @@
 #!/usr/bin/env node
 'use strict';
-// Check a Jira or GitHub connection with your real credentials, using the same code the app uses.
+// Check a Jira, GitHub, Linear, Azure DevOps or GitLab connection with your real credentials, using the same code the app uses.
 // The token is read from the environment, never from the command line.
 //
 //   GITHUB_TOKEN=ghp_... npm run check-integration -- github --owner acme --repo shop
 //   JIRA_TOKEN=...       npm run check-integration -- jira --base https://team.atlassian.net --email you@co.com --project PROJ
 //   JIRA_TOKEN=...       npm run check-integration -- jira --server --base https://jira.example.com --project PROJ   (Server / Data Center, personal access token)
+//   LINEAR_TOKEN=...     npm run check-integration -- linear --team ENG
+//   AZURE_TOKEN=...      npm run check-integration -- azure --base https://dev.azure.com/acme --project Shop [--type Bug]
+//   GITLAB_TOKEN=...     npm run check-integration -- gitlab --project acme/shop [--base https://gitlab.example.com]
 //
 // By default only reads (a connection test). Add --create to also file ONE clearly labelled throwaway issue
 // (Jira also gets a tiny PNG attachment) so you can see the real result; close or delete it afterwards.
 
-const { github, jira, validateBase, IntegrationError } = require('../lib/integrations');
+const { github, jira, linear, azure, gitlab, validateBase, IntegrationError } = require('../lib/integrations');
 
 const [kind, ...rest] = process.argv.slice(2);
 const opt = (name, def = '') => { const i = rest.indexOf(`--${name}`); return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith('--') ? rest[i + 1] : def; };
 const has = (name) => rest.includes(`--${name}`);
 const die = (m) => { console.error(`check-integration: ${m}`); process.exit(1); };
 
-if (!['github', 'jira'].includes(kind)) die('say which one: github or jira (see the comment at the top of this file)');
-const token = process.env[kind === 'github' ? 'GITHUB_TOKEN' : 'JIRA_TOKEN'];
-if (!token) die(`set ${kind === 'github' ? 'GITHUB_TOKEN' : 'JIRA_TOKEN'} in the environment`);
+const CLIENTS = { github, jira, linear, azure, gitlab };
+if (!CLIENTS[kind]) die('say which one: github, jira, linear, azure or gitlab (see the comment at the top of this file)');
+const TOKEN_VAR = `${kind.toUpperCase()}_TOKEN`;
+const token = process.env[TOKEN_VAR];
+if (!token) die(`set ${TOKEN_VAR} in the environment`);
 
 let cfg;
 try {
   cfg = kind === 'github'
     ? { base: validateBase(opt('base', 'https://api.github.com'), 'GitHub API URL'), owner: opt('owner'), repo: opt('repo'), labels: ['bug'] }
+    : kind === 'linear' ? { base: validateBase(opt('base', 'https://api.linear.app'), 'Linear API URL'), teamKey: opt('team').toUpperCase() }
+    : kind === 'azure' ? { base: validateBase(opt('base'), 'Azure DevOps organisation URL'), project: opt('project'), workItemType: opt('type', 'Bug'), labels: [] }
+    : kind === 'gitlab' ? { base: validateBase(opt('base', 'https://gitlab.com'), 'GitLab URL'), project: opt('project'), labels: ['bug'] }
     : { base: validateBase(opt('base'), 'Jira site URL'), variant: has('server') ? 'server' : 'cloud', email: opt('email'), projectKey: opt('project').toUpperCase(), issueType: opt('issue-type', 'Bug'), labels: [] };
 } catch (e) { die(e.message); }
 if (kind === 'github' && (!cfg.owner || !cfg.repo)) die('--owner and --repo are required');
+if (kind === 'linear' && !cfg.teamKey) die('--team is required, e.g. --team ENG');
+if (kind === 'azure' && (!cfg.base || !cfg.project)) die('--base (your organisation URL) and --project are required');
+if (kind === 'gitlab' && !cfg.project) die('--project is required, e.g. --project acme/shop');
 if (kind === 'jira' && ((cfg.variant === 'cloud' && !cfg.email) || !cfg.projectKey)) die('--project is required, and --email for Jira Cloud (and --base). For Jira Server / Data Center add --server and use a personal access token.');
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
@@ -39,12 +50,12 @@ const sampleBug = {
 };
 
 (async () => {
-  const client = kind === 'github' ? github : jira;
+  const client = CLIENTS[kind];
   try {
     console.log(`Testing ${kind}…`);
     console.log('  ✓', await client.test(cfg, token));
     if (!has('create')) { console.log('\nRead-only check passed. Add --create to file one throwaway issue.'); return; }
-    const made = await client.createIssue(cfg, token, sampleBug, { bugUrl: '', attachments: kind === 'jira' ? [{ filename: 'check.png', mime: 'image/png', data: PNG }] : [] });
+    const made = await client.createIssue(cfg, token, sampleBug, { bugUrl: '', attachments: ['jira', 'azure', 'gitlab'].includes(kind) ? [{ filename: 'check.png', mime: 'image/png', data: PNG }] : [] });
     console.log(`  ✓ created ${made.key}: ${made.url}`);
     if (made.note) console.log(`  note: ${made.note}`);
     console.log('\nLook at the issue, then close or delete it. If it looks right, the integration works end to end.');

@@ -2,9 +2,10 @@
 // Per-project GitHub / Jira connections (admin) and "send this bug to…" (testers).
 
 const secret = require('../lib/secret');
-const { IntegrationError, validateBase, github, jira } = require('../lib/integrations');
+const { IntegrationError, validateBase, github, jira, linear, azure, gitlab } = require('../lib/integrations');
 
-const CLIENTS = { github, jira };
+const CLIENTS = { github, jira, linear, azure, gitlab };
+const LABEL = { github: 'GitHub', jira: 'Jira', linear: 'Linear', azure: 'Azure DevOps', gitlab: 'GitLab' };
 const inFlight = new Set();
 
 function install(ctx) {
@@ -51,6 +52,23 @@ function install(ctx) {
     };
     if (kind === 'github') {
       return { sync: syncCfg, base: validateBase(c.base || 'https://api.github.com', 'GitHub API URL'), owner: name(c.owner, 'Owner'), repo: name(c.repo, 'Repository'), labels: labels.length ? labels : ['bug'] };
+    }
+    if (kind === 'linear') {
+      const teamKey = str(c.teamKey).trim().toUpperCase();
+      if (!/^[A-Z0-9]{1,10}$/.test(teamKey)) throw new IntegrationError('The Linear team key looks wrong, e.g. ENG');
+      return { sync: syncCfg, base: validateBase(c.base || 'https://api.linear.app', 'Linear API URL'), teamKey };
+    }
+    if (kind === 'azure') {
+      const project = str(c.project).trim();
+      if (!/^[A-Za-z0-9._ -]{1,64}$/.test(project)) throw new IntegrationError('The Azure DevOps project name looks wrong');
+      const type = str(c.workItemType, 'Bug').trim() || 'Bug';
+      if (!/^[A-Za-z0-9 ]{1,40}$/.test(type)) throw new IntegrationError('The work item type looks wrong, e.g. Bug or Issue');
+      return { sync: syncCfg, base: validateBase(c.base, 'Azure DevOps organisation URL'), project, workItemType: type, labels };
+    }
+    if (kind === 'gitlab') {
+      const project = str(c.project).trim();
+      if (!/^(\d+|[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*)$/.test(project)) throw new IntegrationError('The GitLab project looks wrong: use its numeric ID or group/project');
+      return { sync: syncCfg, base: validateBase(c.base || 'https://gitlab.com', 'GitLab URL'), project, labels: labels.length ? labels : ['bug'] };
     }
     const variant = c.variant === 'server' ? 'server' : 'cloud';
     const email = str(c.email).trim();
@@ -109,7 +127,7 @@ function install(ctx) {
     const kind = str(body.kind);
     if (!CLIENTS[kind]) throw new HttpError(400, 'Unknown integration');
     const row = getRow(bug.project_id, kind);
-    if (!row) throw new HttpError(404, `${kind === 'github' ? 'GitHub' : 'Jira'} is not set up for this project. An admin can connect it under Integrations.`);
+    if (!row) throw new HttpError(404, `${LABEL[kind]} is not set up for this project. An admin can connect it under Integrations.`);
     const prior = q('SELECT external_key FROM bug_links WHERE bug_id=? AND kind=?').get(bug.id, kind);
     if (prior) throw new HttpError(409, `This bug was already sent (${prior.external_key})`);
     const lock = `${bug.id}:${kind}`;
