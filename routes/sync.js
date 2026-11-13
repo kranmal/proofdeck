@@ -1,6 +1,6 @@
 'use strict';
-// Two-way status sync between bugs and their Jira / GitHub issues.
-//   pull: a poller, a "Sync now" button and webhooks update the bug when the issue changes
+// Two-way status sync between bugs and their issues in Jira, GitHub, Linear, Azure DevOps and GitLab.
+//   pull: a poller (always on), a "Sync now" button and webhooks (optional, instant) update the bug when the issue changes
 //   push: changing a bug's status in Proofdeck closes or reopens the issue (opt-in per integration)
 // Changes are applied only when the external state differs from the last one we saw, so a local edit is never
 // undone by an old value, and a push never echoes back as a pull.
@@ -126,8 +126,11 @@ function install(ctx) {
   // A genuine call always gets through; only invalid ones are throttled.
   function verify(req, query, row, raw) {
     const key = secretOf(row);
-    const sig = String(req.headers['x-hub-signature-256'] || req.headers['x-hub-signature'] || '').replace(/^sha256=/, '');
-    if (key && ((sig && safeEq(sig, hmac(key, raw))) || (query.get('secret') && safeEq(query.get('secret'), key)))) return;
+    const sig = String(req.headers['x-hub-signature-256'] || req.headers['x-hub-signature'] || req.headers['linear-signature'] || '').replace(/^sha256=/, '');
+    // GitLab sends the secret as it is; Azure DevOps service hooks can send it as the password of Basic auth.
+    const plain = String(req.headers['x-gitlab-token'] || '');
+    const basic = /^Basic /i.test(req.headers.authorization || '') ? Buffer.from(String(req.headers.authorization).slice(6), 'base64').toString().replace(/^[^:]*:/, '') : '';
+    if (key && ((sig && safeEq(sig, hmac(key, raw))) || (plain && safeEq(plain, key)) || (basic && safeEq(basic, key)) || (query.get('secret') && safeEq(query.get('secret'), key)))) return;
     const ip = req.socket.remoteAddress || '';
     const wait = bad.blocked(ip);
     if (wait) throw new HttpError(429, 'Too many invalid webhook calls');
@@ -164,8 +167,55 @@ function install(ctx) {
     return { ok: true, ...applyExternal(link.id, cat === 'done' ? 'done' : cat === 'indeterminate' ? 'progress' : 'open', st.name || cat || 'unknown') };
   }, { public: true, raw: true });
 
+  route('POST', '/api/webhooks/linear/:pid', ({ params, body, query, req }) => {
+    const row = getRow(params.pid, 'linear');
+    verify(req, query, row, body);
+    const p = parse(body), cfg = JSON.parse(row.config);
+    if (p.webhookTimestamp && Math.abs(Date.now() - Number(p.webhookTimestamp)) > 5 * 60000) return { ok: true, ignored: 'too old' }; // replay guard
+    if (p.type !== 'Issue' || p.action !== 'update' || !p.data || !p.data.state) return { ok: true, ignored: `${p.type || 'event'} ${p.action || ''}`.trim() };
+    const team = p.data.team && p.data.team.key;
+    if (team && String(team).toUpperCase() !== String(cfg.teamKey).toUpperCase()) return { ok: true, ignored: 'another team' };
+    const key = p.data.identifier || (team && p.data.number ? `${team}-${p.data.number}` : '');
+    const link = key && findLink(params.pid, 'linear', key);
+    if (!link) return { ok: true, ignored: 'no bug is linked to this issue' };
+    const t = p.data.state.type;
+    return { ok: true, ...applyExternal(link.id, ['completed', 'canceled'].includes(t) ? 'done' : t === 'started' ? 'progress' : 'open', p.data.state.name || t) };
+  }, { public: true, raw: true });
+
+  // Azure DevOps: a "Work item updated" service hook. The event only says which item changed; the state's category
+  // (proposed / in progress / done) comes from the workflow, so we ask Azure for it instead of guessing from the name.
+  route('POST', '/api/webhooks/azure/:pid', async ({ params, body, query, req }) => {
+    const row = getRow(params.pid, 'azure');
+    verify(req, query, row, body);
+    const p = parse(body), cfg = JSON.parse(row.config);
+    if (p.eventType === 'ping' || /^(git|build|ms\.vss)/.test(p.eventType || '')) return { ok: true, ignored: `event ${p.eventType}` };
+    if (p.eventType !== 'workitem.updated' || !p.resource) return { ok: true, ignored: `event ${p.eventType}` };
+    const r = p.resource, fields = (r.revision && r.revision.fields) || {};
+    const proj = fields['System.TeamProject'];
+    if (proj && String(proj).toLowerCase() !== String(cfg.project).toLowerCase()) return { ok: true, ignored: 'another project' };
+    if (!(r.fields && r.fields['System.State'])) return { ok: true, ignored: 'the state did not change' };
+    const link = findLink(params.pid, 'azure', String(r.workItemId || r.id));
+    if (!link) return { ok: true, ignored: 'no bug is linked to this item' };
+    const out = await pullOne(link);
+    return out.error ? { ok: true, error: out.error } : { ok: true, changed: out.changed, state: out.state };
+  }, { public: true, raw: true });
+
+  route('POST', '/api/webhooks/gitlab/:pid', ({ params, body, query, req }) => {
+    const row = getRow(params.pid, 'gitlab');
+    verify(req, query, row, body);
+    const p = parse(body), cfg = JSON.parse(row.config);
+    if (p.object_kind !== 'issue' || !p.object_attributes) return { ok: true, ignored: `event ${p.object_kind || 'unknown'}` };
+    const path = p.project && p.project.path_with_namespace;
+    if (path && /\//.test(cfg.project) && path.toLowerCase() !== String(cfg.project).toLowerCase()) return { ok: true, ignored: 'another project' };
+    const a = p.object_attributes;
+    if (!['close', 'reopen'].includes(a.action)) return { ok: true, ignored: `action ${a.action}` };
+    const link = findLink(params.pid, 'gitlab', `#${a.iid}`);
+    if (!link) return { ok: true, ignored: 'no bug is linked to this issue' };
+    return { ok: true, ...applyExternal(link.id, a.action === 'close' ? 'done' : 'open', a.action === 'close' ? 'closed' : 'opened') };
+  }, { public: true, raw: true });
+
   // Admin: the address to register and its secret (created on first request, kept encrypted).
-  for (const kind of ['github', 'jira']) { // only these two have a webhook receiver; the others are picked up by the regular check
+  for (const kind of ['github', 'jira', 'linear', 'azure', 'gitlab']) {
     const info = (pid, regenerate) => {
       const row = need(getRow(pid, kind), `${LABEL[kind]} is not connected for this project`);
       let key = regenerate ? null : secretOf(row);

@@ -10,11 +10,17 @@ const body = (r) => new Promise((resolve) => { const c = []; r.on('data', (d) =>
 const send = (res, s, o) => { res.writeHead(s, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
 const serve = (handler) => new Promise((resolve) => { const s = http.createServer(handler); s.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${s.address().port}`, close: () => s.close() })); });
 
-const lin = { issues: {}, next: 41, calls: [] };
+const lin = { issues: {}, next: 41, calls: [], puts: [] };
 const linearServer = () => serve(async (req, res) => {
+  if (req.method === 'PUT' && req.url.startsWith('/upload/')) { // the signed storage address: no Authorization here
+    assert.ok(!req.headers.authorization, 'the API key must not go to the storage address');
+    lin.puts.push({ path: req.url, type: req.headers['content-type'], cache: req.headers['cache-control'], signed: req.headers['x-goog-sig'], bytes: (await body(req)).length });
+    res.writeHead(200); return res.end();
+  }
   if (req.headers.authorization !== LIN) return send(res, 401, { errors: [{ message: 'Authentication required' }] });
   const { query, variables } = JSON.parse((await body(req)).toString());
   lin.calls.push({ query, variables });
+  if (/fileUpload/.test(query)) { const n = lin.puts.length + 1; const host = `http://${req.headers.host}`; return send(res, 200, { data: { fileUpload: { success: true, uploadFile: { uploadUrl: `${host}/upload/${n}`, assetUrl: `https://uploads.linear.app/asset/${n}/${variables.f}`, headers: [{ key: 'x-goog-sig', value: 'abc' }] } } } }); }
   if (/viewer/.test(query)) return send(res, 200, { data: { viewer: { name: 'Lin Bot', email: 'lin@example.com' } } });
   if (/teams\(/.test(query)) return send(res, 200, { data: { teams: { nodes: variables.key === 'ENG' ? [{ id: 'team-1', name: 'Engineering', key: 'ENG' }] : [] } } });
   if (/issueCreate/.test(query)) { const n = lin.next++; lin.issues[`ENG-${n}`] = { id: `id-${n}`, type: 'unstarted' }; return send(res, 200, { data: { issueCreate: { success: true, issue: { id: `id-${n}`, identifier: `ENG-${n}`, url: `https://linear.app/x/issue/ENG-${n}` } } } }); }
@@ -114,10 +120,14 @@ test('Linear: sends an issue with priority from severity, then follows its state
   const r = await a.ok('POST', `/api/bugs/${b.id}/push`, { kind: 'linear' });
   assert.match(r.key, /^ENG-\d+$/);
   assert.match(r.url, /^https:\/\/linear\.app\//);
-  assert.match(r.note, /Screenshots stay in Proofdeck/);
+  assert.equal(r.note, '', 'every screenshot uploaded');
+  assert.ok(lin.puts.length >= 1);
+  assert.deepEqual([lin.puts[0].type, lin.puts[0].cache, lin.puts[0].signed], ['image/png', 'public, max-age=31536000', 'abc']);
+  assert.ok(lin.puts[0].bytes > 0);
   const create = lin.calls.find((c) => /issueCreate/.test(c.query)).variables.input;
   assert.deepEqual([create.teamId, create.title, create.priority], ['team-1', 'Linear bug', 2]);
   assert.match(create.description, /\*\*Found by:\*\* DEMO-T2 step 1/);
+  assert.match(create.description, /### Screenshots\n!\[[^\]]+\]\(https:\/\/uploads\.linear\.app\/asset\/1\//);
   assert.ok(!create.description.includes('@someone') || create.description.includes('@​someone'), 'mentions are defused');
   // pull: the issue is completed in Linear
   lin.issues[r.key].type = 'completed';
@@ -176,7 +186,67 @@ test('GitLab: screenshots become uploads embedded in the description; state is o
   assert.equal((await a.post(`/api/bugs/${b.id}/push`, { kind: 'gitlab' })).status, 409, 'not sent twice');
 });
 
-test('only GitHub and Jira offer webhooks; the others are polled', async () => {
-  assert.equal((await a.get('/api/projects/1/integrations/linear/webhook')).status, 404);
-  assert.equal((await a.get('/api/projects/1/integrations/gitlab/webhook')).status, 404);
+const crypto = require('node:crypto');
+const hook = (kind, raw, headers = {}, qs = '') => fetch(`${ctx.server.base}/api/webhooks/${kind}/1${qs}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: raw }).then(async (r) => ({ status: r.status, data: await r.json().catch(() => null) }));
+const secretOf = async (kind) => (await a.get(`/api/projects/1/integrations/${kind}/webhook`)).data.secret;
+
+test('webhooks for Linear, Azure DevOps and GitLab: wrong secrets are refused, real events update the bug at once', async () => {
+  for (const k of ['linear', 'azure', 'gitlab']) {
+    const w = (await a.get(`/api/projects/1/integrations/${k}/webhook`)).data;
+    assert.equal(w.path, `/api/webhooks/${k}/1`);
+    assert.ok(w.secret.length >= 30);
+  }
+  const status = async (id) => (await a.get(`/api/bugs/${id}`)).data.status;
+
+  // Linear: Linear-Signature is an HMAC of the raw body
+  const lb = await bug('Hooked Linear'); const lr = await a.ok('POST', `/api/bugs/${lb.id}/push`, { kind: 'linear' });
+  const [team, num] = lr.key.split('-'); const lsec = await secretOf('linear');
+  const lev = (type, extra = {}) => JSON.stringify({ action: 'update', type: 'Issue', webhookTimestamp: Date.now(), data: { id: 'x', identifier: lr.key, team: { key: team }, state: { name: type === 'completed' ? 'Done' : 'Todo', type }, ...extra } });
+  const lsig = (raw) => ({ 'Linear-Signature': crypto.createHmac('sha256', lsec).update(raw).digest('hex') });
+  const done = lev('completed');
+  assert.equal((await hook('linear', done, { 'Linear-Signature': '0'.repeat(64) })).status, 401);
+  assert.equal((await hook('linear', done)).status, 401);
+  assert.equal(await status(lb.id), 'Open');
+  const lok = await hook('linear', done, lsig(done));
+  assert.deepEqual([lok.status, lok.data.changed, lok.data.to], [200, true, 'Resolved']);
+  assert.equal((await hook('linear', done, lsig(done))).data.changed, false, 'a replay changes nothing');
+  const stale = JSON.stringify({ action: 'update', type: 'Issue', webhookTimestamp: Date.now() - 3600000, data: { identifier: lr.key, team: { key: team }, state: { name: 'Todo', type: 'unstarted' } } });
+  assert.match((await hook('linear', stale, lsig(stale))).data.ignored, /too old/);
+  const wrongTeam = lev('unstarted', { team: { key: 'OPS' } });
+  assert.match((await hook('linear', wrongTeam, lsig(wrongTeam))).data.ignored, /another team/);
+  const comment = JSON.stringify({ action: 'create', type: 'Comment', data: {} });
+  assert.match((await hook('linear', comment, lsig(comment))).data.ignored, /Comment/);
+  const byNumber = JSON.stringify({ action: 'update', type: 'Issue', data: { number: Number(num), team: { key: team }, state: { name: 'In Progress', type: 'started' } } });
+  assert.equal((await hook('linear', byNumber, lsig(byNumber))).data.changed, true, 'found by team key and number when there is no identifier');
+  assert.equal(await status(lb.id), 'In Progress');
+
+  // Azure DevOps: secret as the Basic auth password, or in the address; the state comes from the workflow
+  const ab = await bug('Hooked Azure'); const ar = await a.ok('POST', `/api/bugs/${ab.id}/push`, { kind: 'azure' }); const asec = await secretOf('azure');
+  const aev = (id = ar.key, extra = {}) => JSON.stringify({ eventType: 'workitem.updated', resource: { workItemId: Number(id), fields: { 'System.State': { oldValue: 'New', newValue: 'Closed' } }, revision: { fields: { 'System.TeamProject': 'Shop' } }, ...extra } });
+  const basic = (pw) => ({ Authorization: `Basic ${Buffer.from(`hook:${pw}`).toString('base64')}` });
+  assert.equal((await hook('azure', aev(), basic('wrong'))).status, 401);
+  ado_.items[ar.key].state = 'Closed';
+  const aok = await hook('azure', aev(), basic(asec));
+  assert.deepEqual([aok.status, aok.data.changed, aok.data.state], [200, true, 'done']);
+  assert.equal(await status(ab.id), 'Resolved');
+  ado_.items[ar.key].state = 'Active';
+  assert.equal((await hook('azure', aev(), {}, `?secret=${asec}`)).data.changed, true, 'the secret in the address works too');
+  assert.equal(await status(ab.id), 'In Progress');
+  assert.match((await hook('azure', aev(ar.key, { revision: { fields: { 'System.TeamProject': 'Other' } } }), basic(asec))).data.ignored, /another project/);
+  assert.match((await hook('azure', aev('99999'), basic(asec))).data.ignored, /no bug is linked/);
+  assert.match((await hook('azure', JSON.stringify({ eventType: 'git.push', resource: {} }), basic(asec))).data.ignored, /event/);
+
+  // GitLab: X-Gitlab-Token is the secret itself
+  const gb = await bug('Hooked GitLab'); const gr = await a.ok('POST', `/api/bugs/${gb.id}/push`, { kind: 'gitlab' }); const gsec = await secretOf('gitlab');
+  const gev = (action, path = 'acme/shop') => JSON.stringify({ object_kind: 'issue', project: { path_with_namespace: path }, object_attributes: { iid: Number(gr.key.slice(1)), action, state: action === 'close' ? 'closed' : 'opened' } });
+  assert.equal((await hook('gitlab', gev('close'), { 'X-Gitlab-Token': 'nope' })).status, 401);
+  const gok = await hook('gitlab', gev('close'), { 'X-Gitlab-Token': gsec });
+  assert.deepEqual([gok.status, gok.data.changed, gok.data.to], [200, true, 'Resolved']);
+  assert.equal((await hook('gitlab', gev('reopen'), { 'X-Gitlab-Token': gsec })).data.to, 'Open');
+  assert.match((await hook('gitlab', gev('update'), { 'X-Gitlab-Token': gsec })).data.ignored, /action update/);
+  assert.match((await hook('gitlab', gev('close', 'someone/else'), { 'X-Gitlab-Token': gsec })).data.ignored, /another project/);
+  assert.match((await hook('gitlab', JSON.stringify({ object_kind: 'push' }), { 'X-Gitlab-Token': gsec })).data.ignored, /event push/);
+
+  // a secret for one tracker does not open another
+  assert.equal((await hook('gitlab', gev('close'), { 'X-Gitlab-Token': lsec })).status, 401);
 });

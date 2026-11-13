@@ -33,7 +33,10 @@ await click('[data-card=gitlab] [data-act=test]'); await sleep(900);
 check('the right token connects', (await text('[data-msg=gitlab]')).includes('Connected to acme/shop'), await text('[data-msg=gitlab]'));
 await click('[data-card=gitlab] [data-act=save]'); await sleep(1200);
 check('saving marks it connected', (await text('[data-card=gitlab]')).includes('Connected') && (await api('/api/projects/1/integrations')).some((i) => i.kind === 'gitlab'));
-check('GitLab has no webhook button, GitHub does', !(await js(`!!document.querySelector('[data-card=gitlab] [data-act=webhook]')`)));
+await click('[data-card=gitlab] [data-act=webhook]'); await sleep(700);
+const hookText = await text('[data-hook=gitlab]');
+check('GitLab webhook box shows the address, secret token and Issues events', hookText.includes('/api/webhooks/gitlab/1') && hookText.includes('Secret token') && hookText.includes('Issues events'), hookText);
+check('the secret is shown for copying', (await js(`document.querySelector('[data-hook=gitlab] input[readonly]').value.length`)) >= 30);
 
 // send a bug there from the bug page
 await api('/api/projects/1/bugs', 'POST', { title: 'Goes to GitLab', actual: 'x' });

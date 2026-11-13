@@ -568,12 +568,12 @@ async function viewIntegrations() {
   const head = (kind, title, blurb) => `<div class="int-head"><h2>${icon('plug')} ${title}</h2>${by[kind] ? pill('Connected') : '<span class="pill">Not set up</span>'}</div><p class="muted">${blurb}</p>`;
   const sv = (kind, k, d) => (by[kind] && by[kind].config.sync && by[kind].config.sync[k] !== undefined ? by[kind].config.sync[k] : d);
   const syncBlock = (kind) => `<h3>Keep bug status in step</h3>
-    <label class="check"><input type="checkbox" data-s="pull"${sv(kind, 'pull', true) ? ' checked' : ''}> When the issue changes, update the bug <small>(checked every few minutes${['github', 'jira'].includes(kind) ? ', or instantly with a webhook' : ''})</small></label>
+    <label class="check"><input type="checkbox" data-s="pull"${sv(kind, 'pull', true) ? ' checked' : ''}> When the issue changes, update the bug <small>(checked every few minutes${', or instantly with a webhook'})</small></label>
     <label class="check"><input type="checkbox" data-s="push"${sv(kind, 'push', false) ? ' checked' : ''}> When someone changes the bug’s status in Proofdeck, close or reopen the issue</label>
     <div class="two"><label>When the issue is closed, set the bug to<select data-s="onClose">${['Resolved', 'Closed'].map((o) => `<option${sv(kind, 'onClose', 'Resolved') === o ? ' selected' : ''}>${o}</option>`).join('')}</select></label>
       <label>When it is reopened, set the bug to<select data-s="onReopen">${['Open', 'In Progress'].map((o) => `<option${sv(kind, 'onReopen', 'Open') === o ? ' selected' : ''}>${o}</option>`).join('')}</select></label></div>
     ${by[kind] ? `<div class="int-actions"><button type="button" class="btn ghost small" data-act="syncall" data-kind="${kind}">${withIcon('rotate', 'Sync all bugs now')}</button>
-      ${['github', 'jira'].includes(kind) ? `<button type="button" class="btn ghost small" data-act="webhook" data-kind="${kind}">Instant updates (webhook)…</button>` : ''}</div><div class="webhook" data-hook="${kind}" hidden></div>` : ''}`;
+      <button type="button" class="btn ghost small" data-act="webhook" data-kind="${kind}">Instant updates (webhook)…</button></div><div class="webhook" data-hook="${kind}" hidden></div>` : ''}`;
   const actions = (kind) => `<div class="int-actions"><button type="button" class="btn ghost" data-act="test" data-kind="${kind}">Test connection</button>
     <button type="button" class="btn primary" data-act="save" data-kind="${kind}">${withIcon('save', 'Save')}</button>
     ${by[kind] ? `<button type="button" class="btn danger" data-act="remove" data-kind="${kind}">${withIcon('trash', 'Remove')}</button>` : ''}
@@ -590,7 +590,7 @@ async function viewIntegrations() {
         ${field('jira', 'base', 'Site URL', { hint: 'Must be https. Self-hosted example: https://jira.example.com (or with a context path like /jira).', ph: 'https://your-team.atlassian.net' })}<span id="jemail">${field('jira', 'email', 'Account email', { hint: 'Jira Cloud only.', ph: 'you@company.com' })}</span>
         ${field('jira', 'projectKey', 'Project key', { ph: 'PROJ' })}${field('jira', 'issueType', 'Issue type', { def: 'Bug' })}
         ${field('jira', 'labels', 'Extra labels', { hint: 'Comma separated. “proofdeck” and a severity label are always added.' })}${field('jira', 'token', 'API token / personal access token', { type: 'password', ph: 'ATATT… or the token from your profile' })}</div>${syncBlock('jira')}${actions('jira')}</section>
-    <section class="card" data-card="linear">${head('linear', 'Linear', 'Create an issue in a team, with priority taken from the bug’s severity. Use a personal API key from Linear: <b>Settings → Security &amp; access → API</b>. Screenshots stay in Proofdeck (Linear needs a separate upload step).')}
+    <section class="card" data-card="linear">${head('linear', 'Linear', 'Create an issue in a team, with priority taken from the bug’s severity. Use a personal API key from Linear: <b>Settings → Security &amp; access → API</b>.  Screenshots are uploaded to Linear and shown in the issue.')}
       <div class="form">${field('linear', 'teamKey', 'Team key', { hint: 'The short prefix of your issue numbers, e.g. ENG for ENG-123.', ph: 'ENG' })}${field('linear', 'token', 'API key', { type: 'password', ph: 'lin_api_…' })}
         <div class="wide">${field('linear', 'base', 'API URL', { hint: 'Leave as it is.', def: 'https://api.linear.app' })}</div></div>${syncBlock('linear')}${actions('linear')}</section>
     <section class="card" data-card="azure">${head('azure', 'Azure DevOps', 'Create a work item with its screenshots attached. Use a personal access token with <b>Work Items: Read &amp; write</b>. Status follows the work item type’s workflow (Proposed, In progress, Resolved, Completed).')}
@@ -630,6 +630,9 @@ async function viewIntegrations() {
         box.hidden = false;
         box.innerHTML = `<p class="muted">Optional. Without it, changes are picked up by the regular check. ${w.url ? '' : '<b>Set the public address on the Email page so this URL is the one other systems can reach.</b> '}Proofdeck must be reachable from ${KIND_LABEL[kind]}.</p>
           ${kind === 'github' ? `<ol><li>In the repository: <b>Settings → Webhooks → Add webhook</b>.</li><li>Payload URL: <code>${esc(url)}</code></li><li>Content type: <code>application/json</code>. Secret: below. Events: <b>Issues</b>.</li></ol>`
+            : kind === 'linear' ? `<ol><li>In Linear: <b>Settings → API → Webhooks → New webhook</b> (needs workspace admin).</li><li>URL: <code>${esc(url)}</code></li><li>Signing secret: paste the secret below. Data change events: <b>Issues</b>.</li></ol>`
+            : kind === 'azure' ? `<ol><li>In Azure DevOps: <b>Project settings → Service hooks → Create subscription → Web Hooks</b>.</li><li>Trigger: <b>Work item updated</b>, with the field <b>State</b> changed.</li><li>URL: <code>${esc(url)}</code>. Basic authentication: any user name, and the secret below as the password.</li></ol>`
+            : kind === 'gitlab' ? `<ol><li>In the project: <b>Settings → Webhooks → Add new webhook</b>.</li><li>URL: <code>${esc(url)}</code>. Secret token: the secret below.</li><li>Trigger: <b>Issues events</b>.</li></ol>`
             : `<ol><li>In Jira: <b>System → WebHooks → Create</b>. Events: <b>Issue → updated</b>.</li><li>URL: <code>${esc(url)}?secret=${esc(w.secret)}</code></li></ol>`}
           <div class="tokenbox"><input readonly value="${esc(w.secret)}" aria-label="Webhook secret" spellcheck="false"><button type="button" class="btn ghost small" data-act="webhook-new" data-kind="${kind}">New secret</button></div>`;
         return;
