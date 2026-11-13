@@ -1540,9 +1540,9 @@ function openImport(onDone) {
   let payload = null, parsed = null, mapping = {}, seq = 0, mode = 'create', strip = false;
   openDialog(`
     <h2>Import test cases</h2>
-    <p class="muted">CSV or Excel (.xlsx). One row per step, with the test case fields on the first row of each case — the layout Zephyr Scale and most tools export.
+    <p class="muted">CSV or Excel (.xlsx or the older .xls). One row per step, with the test case fields on the first row of each case — the layout Zephyr Scale and most tools export.
       <a href="/api/import/template.csv" download>Download a template</a></p>
-    <label>File<input type="file" name="file" accept=".csv,.tsv,.txt,.xlsx"></label>
+    <label>File<input type="file" name="file" accept=".csv,.tsv,.txt,.xlsx,.xls"></label>
     <div id="imp"></div>
     <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary" id="imp-go" disabled>Import</button></footer>`,
     async () => {

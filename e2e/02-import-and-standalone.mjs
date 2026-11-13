@@ -56,7 +56,7 @@ check('dialog closed, list grew by 2', !(await js(`document.querySelector('#dlg'
 // --- bad file ---
 await js(`document.querySelector('[data-act=import]').click()`); await sleep(300);
 await pickFile(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0, 0]).toString('base64'), 'old.xls', 'application/vnd.ms-excel'); await sleep(600);
-check('old .xls gives a clear error', (await js(`document.querySelector('#imp').innerText`)).includes('not supported'));
+check('a broken .xls gives a clear error', (await js(`document.querySelector('#imp').innerText`)).includes('not a valid .xls'));
 await js(`document.querySelector('#dlg [data-close]').click()`); await sleep(200);
 
 // --- standalone run from the list ---

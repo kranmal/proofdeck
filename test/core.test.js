@@ -52,7 +52,7 @@ test('importing: CSV with quotes, multi-line cells, blank-title continuation row
   const semi = (await admin.post('/api/import/parse', { data: b64('Title;Steps;Expected\nA;do;ok\n;do2;ok2\n') })).data;
   assert.deepEqual(semi.mapping, { title: 0, action: 1, expected: 2 });
   assert.equal((await admin.post('/api/projects/1/import', { rows: semi.rows, mapping: {}, dryRun: true })).status, 400, 'title column is required');
-  assert.equal((await admin.post('/api/import/parse', { data: Buffer.from([0xd0, 0xcf, 0x11, 0xe0]).toString('base64') })).status, 400, 'old .xls is refused clearly');
+  assert.equal((await admin.post('/api/import/parse', { data: Buffer.from([0xd0, 0xcf, 0x11, 0xe0]).toString('base64') })).status, 400, 'a broken .xls is refused clearly');
 });
 
 test('export round-trips through import for CSV and XLSX, and defuses formulas in CSV', async () => {

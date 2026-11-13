@@ -164,5 +164,5 @@ e2e/                 browser checks over the DevTools protocol
 - Excel import is tested with hand-written workbooks shaped like Excel's own output, not files saved by Excel. Dates arrive as
   dates, using the cell's number format (1900 and 1904 systems); a cell is only treated as a date if its format says so.
 - "Today" for overdue cycles and reminders follows each person's time zone (account menu). People who have not set one get the server's UTC date.
-- Old `.xls` files are not read; save as `.xlsx` or CSV.
+- `.xls` import reads cell values only (text, numbers, dates, booleans, formula results). Excel 5/95 and password-protected files are refused. Checked against files written by xlwt and compared with xlrd, not against files saved by real Excel.
 - A single process with a single SQLite file: built for a team, not for large-scale hosting.
