@@ -207,6 +207,51 @@ function mountDiscussion(box, type, id, data) {
   paint();
 }
 
+// Saved views: a drop-down of named filter sets (yours first, then shared ones) plus Save and Delete.
+const VIEW_LABEL = { cases: 'test cases', bugs: 'bugs', cycles: 'test cycles' };
+const VIEW_SEL = {}; // the view last picked per list, so it stays selected when the list redraws
+async function mountViews(box, scope, getState, applyState) {
+  if (!box) return;
+  let views = [];
+  try { views = await api('GET', `/api/projects/${STATE.pid}/views?scope=${scope}`); } catch { return; }
+  let current = views.find((v) => v.id === VIEW_SEL[scope]) || null;
+  const paint = () => {
+    box.innerHTML = `<select data-v-pick aria-label="Saved views"><option value="">Saved views${views.length ? '' : ' (none yet)'}</option>
+      ${views.map((v) => `<option value="${v.id}"${current && current.id === v.id ? ' selected' : ''}>${esc(v.name)}${v.mine ? '' : ` — ${esc(v.owner)}`}${v.shared && v.mine ? ' (shared)' : ''}</option>`).join('')}</select>
+      <button type="button" class="btn small ghost" data-v-save>${withIcon('plus', 'Save view')}</button>
+      ${current && (current.mine || STATE.user.role === 'admin') ? `<button type="button" class="icon danger" data-v-del title="Delete this view" aria-label="Delete view ${esc(current.name)}">${icon('trash')}</button>` : ''}`;
+  };
+  box.onchange = (e) => {
+    if (!e.target.matches('[data-v-pick]')) return;
+    e.stopPropagation();
+    current = views.find((v) => String(v.id) === e.target.value) || null;
+    VIEW_SEL[scope] = current ? current.id : null;
+    if (current) applyState(current.state); else paint();
+  };
+  box.onclick = async (e) => {
+    const save = e.target.closest('[data-v-save]'), del = e.target.closest('[data-v-del]');
+    if (!save && !del) return;
+    e.stopPropagation();
+    try {
+      if (del) {
+        if (!confirm(`Delete the view “${current.name}”?`)) return;
+        await api('DELETE', `/api/views/${current.id}`);
+        views = views.filter((v) => v.id !== current.id); current = null; VIEW_SEL[scope] = null; paint(); return;
+      }
+      openDialog(`<h2>Save view</h2><p class="muted">Saves the current filters for ${VIEW_LABEL[scope]}. Using an existing name replaces that view.</p>
+        <label>Name<input name="name" required maxlength="60" autofocus value="${current ? esc(current.name) : ''}"></label>
+        ${STATE.user.role === 'viewer' ? '' : '<label class="check"><input type="checkbox" name="shared"> Share with everyone on this project</label>'}
+        <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Save</button></footer>`,
+        async (fd) => {
+          const r = await api('POST', `/api/projects/${STATE.pid}/views`, { scope, name: fd.get('name'), shared: fd.get('shared') === 'on', state: getState() });
+          views = await api('GET', `/api/projects/${STATE.pid}/views?scope=${scope}`);
+          current = views.find((v) => v.id === r.id) || null; VIEW_SEL[scope] = current ? current.id : null; paint(); toast('View saved');
+        });
+    } catch (err) { fail(err); }
+  };
+  paint();
+}
+
 // ---------- reports ----------
 // Status colours are validated for colour-blind separation; Fail and Blocked also carry a texture, and every
 // mark has a label, a tooltip and a table equivalent.
@@ -1425,7 +1470,8 @@ async function viewCases() {
         <div class="fbar" id="fbar"></div>
         <div class="filters"><input type="search" id="q" placeholder="Search by key, title, label or requirement" aria-label="Search test cases">
           <label class="check"><input type="checkbox" id="deep"> Include subfolders</label>
-          <select id="status-filter" aria-label="Status"><option value="">Any status</option>${['Draft', 'In Review', 'Approved', 'Deprecated'].map((s) => `<option>${s}</option>`).join('')}</select></div>
+          <select id="status-filter" aria-label="Status"><option value="">Any status</option>${['Draft', 'In Review', 'Approved', 'Deprecated'].map((s) => `<option>${s}</option>`).join('')}</select>
+          <span class="viewsbar" id="viewsbar"></span></div>
         <div class="bulk" id="bulk" hidden></div>
         <section class="card flush"><table><thead><tr><th class="cb"><input type="checkbox" id="sel-all" aria-label="Select all shown"></th><th>Test case</th><th>Folder</th><th>Priority</th><th>Status</th><th class="num">Steps</th><th>Last result</th><th class="num">Open bugs</th><th></th></tr></thead>
         <tbody id="rows"></tbody></table></section>
@@ -1434,6 +1480,8 @@ async function viewCases() {
   $('#q').value = U.term;
   $('#deep').checked = U.deep;
   $('#status-filter').value = U.status;
+  mountViews($('#viewsbar'), 'cases', () => ({ term: U.term, status: U.status, folder: U.folder, deep: U.deep }),
+    (st) => { Object.assign(U, { term: st.term || '', status: st.status || '', folder: st.folder || '', deep: st.deep !== false }); U.sel.clear(); router(); });
 
   const paint = () => {
     const list = visible();
@@ -1930,11 +1978,14 @@ async function viewCycles() {
   const cycles = all.filter((c) => cyFilter === 'all' || (cyFilter === 'overdue' ? c.overdue : cyFilter === 'finished' ? !c.adhoc && c.total > 0 && left(c) === 0 : !c.adhoc && (left(c) > 0 || c.total === 0)));
   view.innerHTML = `
     <header class="head"><h1>Test cycles</h1><button class="btn primary" data-act="new">${withIcon('plus', 'New cycle')}</button></header>
-    <div class="filters"><select id="cyfilter" aria-label="Show">${[['all', 'All cycles'], ['active', 'Still to run'], ['overdue', 'Overdue'], ['finished', 'Finished']].map(([v, l]) => `<option value="${v}"${cyFilter === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div class="filters"><select id="cyfilter" aria-label="Show">${[['all', 'All cycles'], ['active', 'Still to run'], ['overdue', 'Overdue'], ['finished', 'Finished']].map(([v, l]) => `<option value="${v}"${cyFilter === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      <span class="viewsbar" id="viewsbar"></span></div>
     <section class="card flush">${cycles.length ? `<table><thead><tr><th>Cycle</th><th>Plan</th><th>Environment</th><th>Build</th><th>Due</th><th class="w-bar">Progress</th><th class="num">Pass</th><th class="num">Fail</th><th class="num">Blocked</th><th class="num">Left</th></tr></thead><tbody>
       ${cycles.map((c) => `<tr><td><a href="#/cycles/${c.id}"><span class="key">${esc(c.key)}</span> ${esc(c.name)}</a></td><td>${c.plan_id ? `<a href="#/plans/${c.plan_id}">${esc(c.plan_name)}</a>` : '<span class="muted">—</span>'}</td><td>${c.adhoc ? '<span class="muted">Standalone</span>' : esc(c.environment)}</td><td>${esc(c.build)}</td><td>${dueCell(c)}</td>
         <td>${bar(c)}</td><td class="num">${c.pass}</td><td class="num">${c.fail}</td><td class="num">${c.blocked}</td><td class="num">${c.not_executed + c.in_progress}</td></tr>`).join('')}
       </tbody></table>` : `<p class="empty">${all.length ? 'No cycles match this filter.' : 'No cycles yet. A cycle is one run of a set of test cases against a build.'}</p>`}</section>`;
+  mountViews($('#viewsbar'), 'cycles', () => ({ cyfilter: cyFilter }),
+    (st) => { try { sessionStorage.setItem('cyfilter', st.cyfilter || 'all'); } catch { /* ignore */ } router(); });
   view.onchange = (e) => { if (e.target.id === 'cyfilter') { try { sessionStorage.setItem('cyfilter', e.target.value); } catch { /* ignore */ } router(); } };
   view.onclick = (e) => { if (e.target.closest('[data-act=new]')) openNewCycle().catch(fail); };
 }
@@ -2209,9 +2260,11 @@ async function viewRun(id) {
 }
 
 // ---------- bugs ----------
+const PENDING_VIEW = { bugs: null }; // a saved view chosen on the bugs list, read once when the list is drawn
 async function viewBugs() {
   const bugs = await api('GET', `/api/projects/${STATE.pid}/bugs`);
   let status = 'active', who = '';
+  if (PENDING_VIEW.bugs) { status = PENDING_VIEW.bugs.status || 'active'; who = PENDING_VIEW.bugs.who || ''; PENDING_VIEW.bugs = null; }
   const sel = new Set();
   const visibleBugs = () => bugs.filter((b) => (status === 'all' || (status === 'active' ? ['Open', 'In Progress'].includes(b.status) : b.status === status))
       && (!who || (who === 'me' ? b.assignee_id === STATE.user.id : !b.assignee_id)));
@@ -2226,10 +2279,13 @@ async function viewBugs() {
     <header class="head"><h1>Bugs</h1><button class="btn primary" data-act="new">${withIcon('plus', 'New bug')}</button></header>
     <div class="filters"><select id="bstatus" aria-label="Status filter">
       <option value="active">Open &amp; in progress</option><option value="all">All</option><option>Open</option><option>In Progress</option><option>Resolved</option><option>Closed</option></select>
-      <select id="bwho" aria-label="Assignee filter"><option value="">Anyone</option><option value="me">Assigned to me</option><option value="none">Unassigned</option></select></div>
+      <select id="bwho" aria-label="Assignee filter"><option value="">Anyone</option><option value="me">Assigned to me</option><option value="none">Unassigned</option></select>
+      <span class="viewsbar" id="viewsbar"></span></div>
     <div class="bulk" id="bbulk" hidden></div>
     <section class="card flush"><table><thead><tr><th class="cb"><input type="checkbox" id="bsel-all" aria-label="Select all shown"></th><th>Bug</th><th>Severity</th><th>Priority</th><th>Status</th><th>Assignee</th><th>Found by</th><th class="num">Screenshots</th><th>Created</th></tr></thead>
     <tbody id="rows">${rows()}</tbody></table></section>`;
+  $('#bstatus').value = status; $('#bwho').value = who;
+  mountViews($('#viewsbar'), 'bugs', () => ({ status, who }), (st) => { PENDING_VIEW.bugs = st; router(); });
   const paintBulk = () => {
     const bar = $('#bbulk');
     bar.hidden = !sel.size;

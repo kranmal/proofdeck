@@ -44,6 +44,7 @@ All of that user's sessions are ended.
 - **Jira Cloud, Jira Server / Data Center and GitHub**: send a bug as an issue (Jira gets the attachments; GitHub's API cannot take images).
   Optional **two-way status sync**: closing the issue resolves the bug (checked every few minutes, or instantly through a webhook) and,
   if you switch it on, resolving the bug closes the issue. Server / Data Center uses a personal access token and REST v2.
+- **Saved views**: the test case, bug and cycle lists can save their current filters under a name, kept private or shared with the project, and bring them back in one click.
 - **Trash**: deleting a test case, cycle or bug moves it to Trash (with steps, versions, comments, files, runs and results) for `TRASH_DAYS` days. Undo from the toast or restore from the Trash page; admins can delete for good. Other cases that called a deleted case lose that step, and that is not undone.
 - **Comments and files**: test cases and runs have a comments thread (use `@username` to notify someone; the owner, reviewer, assignee and earlier commenters hear about replies) and file attachments, like bugs do.
 - **Notifications**: in-app and email (your own SMTP server), instant or a daily summary per person, assigned/mentioned/status/due
@@ -136,7 +137,7 @@ Everything lives in `DATA_DIR`. For a consistent copy while the server runs:
 
 ```
 server.js            core: database, cases, cycles, executions, bugs, HTTP
-routes/              trash, auth, security (audit, sessions), notifications, integrations, sync, fields, review, reports, plans, traceability, API tokens, CI
+routes/              views, trash, auth, security (audit, sessions), notifications, integrations, sync, fields, review, reports, plans, traceability, API tokens, CI
 lib/                 auth, secret, integrations (Jira/GitHub), versions, links, import, export, JUnit reader
 scripts/             reset-password, check-integration
 public/              the web app (vanilla JS, no build step)
