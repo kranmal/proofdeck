@@ -79,6 +79,6 @@ await js(`document.querySelector('[data-act=run]').click()`); await sleep(900);
 check('Run from case editor opens player', /^#\/run\/\d+$/.test(await js(`location.hash`)));
 await js(`location.hash = '#/cycles'`); await sleep(600);
 check('cycles list shows Standalone runs', (await js(`document.querySelector('#view').innerText`)).includes('Standalone runs'));
-const unexpectedErrs = errors.filter((e) => !/status of 400/.test(e)); // the .xls upload is refused on purpose
+const unexpectedErrs = errors.filter((e) => !/status of 400|ERR_INCOMPLETE_CHUNKED_ENCODING/.test(e)); // a stream left open by the previous script's server being stopped is fine; // the .xls upload is refused on purpose
 check('no console / runtime errors', unexpectedErrs.length === 0, unexpectedErrs.join(' | '));
 ws.close();

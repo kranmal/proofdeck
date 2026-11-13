@@ -803,6 +803,7 @@ document.addEventListener('visibilitychange', () => {
   if (liveStale) { liveStale = false; liveChanged([{ topic: LIVE_TOPICS[liveRouteName()] ? LIVE_TOPICS[liveRouteName()][0] : '', pid: null, actor: null }]); }
 });
 window.addEventListener('hashchange', () => liveBar(false));
+window.addEventListener('pagehide', () => { if (liveSource) { liveSource.close(); liveSource = null; } }); // a reload must not look like a dropped connection
 
 
 async function viewNotifications() {
@@ -2494,7 +2495,8 @@ async function viewRun(id) {
       <label class="actual">Actual result<textarea data-actual rows="2" placeholder="What actually happened (needed for a good bug report)">${esc(s.actual)}</textarea></label>
       <div class="shots">${thumbs(s.attachments, true)}
         <label class="btn small ghost">${withIcon('image', 'Add screenshot or file')}<input type="file" accept="${ACCEPT}" multiple hidden data-upload></label>
-        <span class="muted">or paste (Ctrl+V) / drop an image or file</span></div>
+        <label class="btn small ghost cam">${withIcon('image', 'Take photo')}<input type="file" accept="image/*" capture="environment" hidden data-upload></label>
+        <span class="muted hint">or paste (Ctrl+V) / drop an image or file</span></div>
       <footer>
         <button type="button" class="btn st pass${s.status === 'Pass' ? ' on' : ''}" data-act="status" data-v="Pass">${withIcon('check', 'Pass')}</button>
         <button type="button" class="btn st fail${s.status === 'Fail' ? ' on' : ''}" data-act="status" data-v="Fail">${withIcon('x', 'Fail')}</button>
@@ -2512,6 +2514,7 @@ async function viewRun(id) {
       <p class="meta"><a href="#/cycles/${ex.cycle_id}">${esc(ex.cycle_key)} ${esc(ex.cycle_name)}</a>${[ex.environment, ex.build && `Build ${ex.build}`].filter(Boolean).map((x) => ' · ' + esc(x)).join('')}
         · ${pill(ex.status)}${ex.assignee_name ? ` · Assigned to ${esc(ex.assignee_name)}` : ''}${ex.executed_by_name ? ` · Last run by ${esc(ex.executed_by_name)}` : ''}${ex.iteration ? ` · Data set ${ex.iteration}: ${esc(ex.iteration_label)}` : ''}${ex.case_version ? ` · Test case v${ex.case_version}` : ''}${ex.case_id && ex.current_version > ex.case_version ? ` · <a href="#/cases/${ex.case_id}">the test case has changed since this run (now v${ex.current_version})</a>` : ''}</p>
       ${ex.precondition ? `<section class="card pre-box"><h4>Preconditions</h4><p class="pre">${esc(ex.precondition)}</p></section>` : ''}
+      ${ex.steps.length > 1 ? `<nav class="stepstrip" aria-label="Steps">${ex.steps.map((x) => `<button type="button" class="${cls(x.status)}${x.id === active ? ' on' : ''}" data-act="goto" data-step="${x.id}" aria-label="Step ${x.position}: ${esc(x.status)}"${x.id === active ? ' aria-current="step"' : ''}>${x.position}</button>`).join('')}</nav>` : ''}
       ${ex.steps.length ? ex.steps.map(stepCard).join('') : `<section class="card"><p class="empty">This test case has no steps. Set the result directly:</p>
         <p>${['Pass', 'Fail', 'Blocked'].map((v) => `<button class="btn st ${cls(v)}${ex.status === v ? ' on' : ''}" data-act="exec-status" data-v="${v}">${withIcon({ Pass: 'check', Fail: 'x', Blocked: 'ban' }[v], v)}</button>`).join(' ')}</p></section>`}
       <section class="card"><label>Run notes<textarea id="comment" rows="2" placeholder="Optional notes for this execution">${esc(ex.comment)}</textarea></label></section>
@@ -2532,6 +2535,7 @@ async function viewRun(id) {
   const setActive = (sid, scroll) => {
     active = Number(sid);
     $$('.step', view).forEach((c) => c.classList.toggle('active', Number(c.dataset.step) === active));
+    $$('.stepstrip button', view).forEach((b) => { const on = Number(b.dataset.step) === active; b.classList.toggle('on', on); if (on) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current'); });
     if (scroll) $(`.step[data-step="${active}"]`, view)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   };
   const setStatus = async (sid, status) => {
@@ -2543,7 +2547,7 @@ async function viewRun(id) {
       if (ex.steps[i + 1]) active = ex.steps[i + 1].id;
     } else active = Number(sid);
     await reload();
-    if (status === 'Pass') setActive(active, true);
+    if (status === 'Pass') { setActive(active, true); if (window.matchMedia('(max-width: 640px)').matches) window.scrollTo({ top: 0 }); }
   };
   const upload = async (sid, files) => {
     if (!files.length || !sid) return;
@@ -2636,6 +2640,7 @@ async function viewRun(id) {
     if (card) setActive(card.dataset.step);
     const b = e.target.closest('[data-act]');
     if (!b) return;
+    if (b.dataset.act === 'goto') { setActive(b.dataset.step); window.scrollTo({ top: 0 }); return; }
     try {
       if (b.dataset.act === 'status') await setStatus(card.dataset.step, b.dataset.v);
       else if (b.dataset.act === 'bug') await openBugDialog(Number(card.dataset.step));

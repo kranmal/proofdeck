@@ -11,7 +11,8 @@ export async function connect({ app = 'http://127.0.0.1:4791', out = '.', port =
     if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); }
     if (!ready) return;
     if (d.method === 'Runtime.exceptionThrown') errors.push(d.params.exceptionDetails.exception?.description || d.params.exceptionDetails.text);
-    if (d.method === 'Log.entryAdded' && d.params.entry.level === 'error') errors.push(`${d.params.entry.text} ${d.params.entry.url || ''}`);
+    // A live-update stream cut because a test server was stopped is expected, not a bug.
+    if (d.method === 'Log.entryAdded' && d.params.entry.level === 'error' && !/ERR_INCOMPLETE_CHUNKED_ENCODING|ERR_CONNECTION_REFUSED/.test(`${d.params.entry.text}`) ) errors.push(`${d.params.entry.text} ${d.params.entry.url || ''}`);
   };
   const send = (method, params = {}) => new Promise((r) => { const id = ++seq; pending.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

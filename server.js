@@ -1443,6 +1443,8 @@ const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
+  '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json; charset=utf-8'],
+  '/icon.svg': ['icon.svg', 'image/svg+xml'],
 };
 const SECURITY = {
   'X-Content-Type-Options': 'nosniff',

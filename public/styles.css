@@ -460,3 +460,51 @@ body.viewer [data-act^="add-"], body.viewer [data-act^="del-"], body.viewer [dat
 .qr svg { display: block; width: 100%; height: auto; }
 
 .livebar { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin: 0 0 16px; padding: 10px 14px; border: 1px solid var(--accent, #2563eb); border-radius: 8px; background: color-mix(in srgb, var(--accent, #2563eb) 10%, transparent); }
+
+/* ---------- phones: the test player is one step at a time with thumb-sized buttons ---------- */
+.stepstrip, .step .cam { display: none; }
+@media (max-width: 640px) {
+  html { -webkit-text-size-adjust: 100%; }
+  body { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+  body { grid-template-columns: minmax(0, 1fr); }
+  .side, #view { min-width: 0; }
+  input, select, textarea, label > input, label > select, label > textarea { font-size: 16px; } /* anything smaller makes iOS zoom in when a field is touched */
+  .side { gap: 8px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top)); }
+  .side .brand { order: 1; margin-right: auto; }
+  .side #me { order: 2; width: auto; padding: 4px; border-radius: 50%; }
+  .side #me .me-name { display: none; }
+  .side .proj { flex: 1 1 200px; min-width: 0; order: 3; }
+  .side .proj span { display: none; }
+  .side #new-project { order: 4; width: auto; flex: 0 0 auto; min-height: 40px; }
+  #nav { flex: 1 1 100%; order: 5; flex-wrap: nowrap; overflow-x: auto; gap: 4px; padding-bottom: 4px; scrollbar-width: none; }
+  #nav::-webkit-scrollbar { display: none; }
+  #nav a { white-space: nowrap; padding: 10px 12px; }
+  #view { padding: 12px; }
+  .head { flex-wrap: wrap; gap: 8px; }
+  .btn { min-height: 44px; }
+  .filters { flex-wrap: wrap; }
+  .filters select, .filters input { flex: 1 1 140px; }
+  dialog { width: calc(100vw - 16px); max-width: none; max-height: calc(100vh - 16px); }
+
+  .keys, .step .hint { display: none; }
+  body:has(.step) #view { padding-bottom: 110px; }
+  .step .cam { display: inline-flex; }
+  .stepstrip { display: flex; gap: 6px; overflow-x: auto; padding: 4px 2px 10px; scrollbar-width: none; position: sticky; top: 0; z-index: 3; background: var(--bg); }
+  .stepstrip::-webkit-scrollbar { display: none; }
+  .stepstrip button { flex: 0 0 auto; width: 42px; height: 42px; border-radius: 50%; border: 2px solid var(--line); background: var(--panel); color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
+  .stepstrip button.pass { border-color: var(--pass); } .stepstrip button.fail { border-color: var(--fail); } .stepstrip button.blocked { border-color: var(--blocked); }
+  .stepstrip button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .step:not(.active) { display: none; }
+  .step { padding-bottom: 96px; margin-bottom: 12px; }
+  .step.active { outline: none; }
+  .step .pre { font-size: 17px; line-height: 1.45; }
+  .step .actual textarea { min-height: 84px; }
+  .step .shots { gap: 8px; }
+  .step .shots .btn { flex: 1 1 130px; }
+  /* Pass / Fail / Blocked stay in reach of the thumb */
+  .step > footer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; margin: 0; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: var(--panel); border-top: 1px solid var(--line); box-shadow: 0 -4px 16px rgba(0,0,0,.18); display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .step > footer .btn { min-height: 52px; min-width: 0; font-size: 16px; }
+  .step > footer .btn.bug, .step > footer .btn.ghost { grid-column: 1 / -1; margin: 0; min-height: 44px; }
+  #toast { bottom: 96px; }
+}
