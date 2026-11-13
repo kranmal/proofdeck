@@ -45,6 +45,7 @@ const ICON_PATHS = {
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
   rotate: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
+  send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/>',
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.8"/><path d="M17.5 14.2A5.5 5.5 0 0 1 21.5 20"/>',
   logout: '<path d="M9 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="m16 8 4 4-4 4M20 12H9"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 8-8M16 7l3 3"/>',
@@ -1089,6 +1090,59 @@ function openAccount() {
 }
 $('#me').onclick = openAccount;
 
+async function viewWebhooks() {
+  const { items, events, kinds } = await api('GET', `/api/projects/${STATE.pid}/webhooks`);
+  const KIND = { slack: 'Slack', teams: 'Microsoft Teams', generic: 'Generic (JSON)' };
+  const proj = STATE.projects.find((p) => p.id === STATE.pid);
+  view.innerHTML = `
+    <header class="head"><h1>Webhooks</h1><button class="btn primary" data-act="add">${withIcon('plus', 'Add webhook')}</button></header>
+    <p class="meta">Post a short message to Slack, Teams or your own service when something happens in ${esc(proj ? proj.name : 'this project')}. Failed posts are retried a few times.
+      The address often contains a secret key, so it is stored encrypted and never shown again.</p>
+    ${items.length ? `<section class="card flush"><table><thead><tr><th>Name</th><th>Sends to</th><th>When</th><th>Last post</th><th></th></tr></thead><tbody>
+      ${items.map((h) => `<tr><td>${esc(h.name)}${h.active ? '' : ' <span class="pill">Paused</span>'}</td><td>${KIND[h.kind]}<br><small class="muted">${esc(h.host)}${h.signed ? ' · signed' : ''}</small></td>
+        <td><small>${h.events.map((e) => esc(events[e])).join('<br>')}</small></td>
+        <td>${h.last ? `${h.last.status === 'ok' ? '<span class="pill pass">Delivered</span>' : h.last.status === 'failed' ? '<span class="pill fail">Failed</span>' : '<span class="pill">Retrying</span>'}<br><small class="muted">${fmtDate(h.last.created_at)}${h.last.last_error ? ' · ' + esc(h.last.last_error) : ''}</small>` : '<span class="muted">Nothing yet</span>'}</td>
+        <td class="num"><button type="button" class="btn small ghost" data-act="test" data-id="${h.id}">${withIcon('send', 'Send test')}</button>
+          <button type="button" class="icon" data-act="edit" data-id="${h.id}" title="Edit ${esc(h.name)}" aria-label="Edit ${esc(h.name)}">${icon('pencil')}</button>
+          <button type="button" class="icon danger" data-act="del" data-id="${h.id}" title="Delete ${esc(h.name)}" aria-label="Delete ${esc(h.name)}">${icon('trash')}</button></td></tr>`).join('')}
+      </tbody></table></section>` : '<p class="empty">No webhooks yet.</p>'}`;
+  const form = (h) => `<h2>${h ? 'Edit' : 'Add'} webhook</h2>
+    <label>Name<input name="name" required maxlength="80" value="${esc(h ? h.name : '')}" placeholder="e.g. #qa-alerts"></label>
+    ${h ? '' : `<label>Send to<select name="kind">${kinds.map((k) => `<option value="${k}">${KIND[k]}</option>`).join('')}</select></label>`}
+    <label>Address<small>${h ? 'Leave blank to keep the current one. ' : ''}Slack: an incoming webhook URL. Teams: a Workflows webhook URL. Generic: any https:// endpoint that accepts JSON.</small>
+      <input name="url" type="url" ${h ? '' : 'required'} maxlength="2000" placeholder="https://…" autocomplete="off"></label>
+    ${!h || h.kind === 'generic' ? `<label data-generic>Signing secret <small>(generic only, optional)</small><small>Adds an X-Proofdeck-Signature header: sha256 HMAC of the body.${h ? ' Leave blank to keep it; type a space to remove it.' : ''}</small><input name="signingSecret" maxlength="200" autocomplete="off"></label>` : ''}
+    <fieldset><legend>Send a message when</legend>${Object.entries(events).map(([k, l]) => `<label class="check"><input type="checkbox" name="events" value="${k}"${(h ? h.events.includes(k) : k === 'run.failed' || k === 'bug.created') ? ' checked' : ''}> ${esc(l)}</label>`).join('')}</fieldset>
+    ${h ? `<label class="check"><input type="checkbox" name="active"${h.active ? ' checked' : ''}> Active</label>` : ''}
+    <footer><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">${h ? 'Save' : 'Add'}</button></footer>`;
+  view.onclick = async (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    const h = items.find((x) => String(x.id) === b.dataset.id);
+    try {
+      if (b.dataset.act === 'add') {
+        openDialog(form(null), async (fd) => {
+          await api('POST', `/api/projects/${STATE.pid}/webhooks`, { name: fd.get('name'), kind: fd.get('kind'), url: fd.get('url'), signingSecret: fd.get('signingSecret') || '', events: fd.getAll('events') });
+          router();
+        });
+      } else if (b.dataset.act === 'edit') {
+        openDialog(form(h), async (fd) => {
+          const sec = fd.get('signingSecret');
+          await api('PUT', `/api/webhooks/${h.id}`, { name: fd.get('name'), url: fd.get('url') || undefined, events: fd.getAll('events'), active: fd.get('active') === 'on',
+            ...(h.kind === 'generic' && sec ? { signingSecret: sec.trim() } : {}) });
+          router();
+        });
+      } else if (b.dataset.act === 'test') {
+        await api('POST', `/api/webhooks/${h.id}/test`, {});
+        toast('Test message queued. Reload in a moment to see the result.');
+      } else if (b.dataset.act === 'del') {
+        if (!confirm(`Delete the webhook “${h.name}”?`)) return;
+        await api('DELETE', `/api/webhooks/${h.id}`); router();
+      }
+    } catch (err) { fail(err); }
+  };
+}
+
 async function viewTrash() {
   const { items, days } = await api('GET', `/api/projects/${STATE.pid}/trash`);
   const admin = STATE.user.role === 'admin';
@@ -1208,6 +1262,7 @@ const ROUTES = [
   [/^#\/bugs\/(\d+)$/, 'bugs', viewBug],
   [/^#\/reports$/, 'reports', viewReports],
   [/^#\/trash$/, 'trash', viewTrash],
+  [/^#\/webhooks$/, 'webhooks', viewWebhooks],
   [/^#\/users$/, 'users', viewUsers],
   [/^#\/integrations$/, 'integrations', viewIntegrations],
   [/^#\/api-tokens$/, 'api-tokens', viewApiTokens],
@@ -2449,7 +2504,7 @@ async function viewBug(id) {
   };
 }
 
-const NAV_ICONS = { trash: 'trash', dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail', 'custom-fields': 'sliders', audit: 'file' };
+const NAV_ICONS = { webhooks: 'send', trash: 'trash', dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail', 'custom-fields': 'sliders', audit: 'file' };
 $$('#nav a').forEach((a) => { a.innerHTML = withIcon(NAV_ICONS[a.dataset.nav], a.textContent); });
 $('#new-project').innerHTML = withIcon('plus', 'New project');
 
