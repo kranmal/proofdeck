@@ -2859,3 +2859,37 @@ $('#new-project').innerHTML = withIcon('plus', 'New project');
     else if (me.user) await startApp(me.user); else renderAuth(me.needsSetup);
   } catch (err) { fail(err); }
 })();
+
+// Every password field gets an eye button that shows or hides what was typed. Fields are rendered all over the app,
+// so this wraps them as they appear instead of changing each template.
+const EYE = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.9 17.9A10.4 10.4 0 0 1 12 19C5.6 19 2 12 2 12a18 18 0 0 1 4.1-5.1M9.9 5.2A9.6 9.6 0 0 1 12 5c6.4 0 10 7 10 7a18 18 0 0 1-2.2 3.2M1 1l22 22"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+function addPasswordToggles(root) {
+  root.querySelectorAll('input[type=password]:not([data-pw])').forEach((input) => {
+    input.dataset.pw = '1';
+    const focused = document.activeElement === input;
+    const wrap = document.createElement('span');
+    wrap.className = 'pw';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pw-eye';
+    btn.setAttribute('aria-label', 'Show password');
+    btn.setAttribute('aria-pressed', 'false');
+    btn.title = 'Show password';
+    btn.innerHTML = EYE;
+    btn.addEventListener('click', () => {
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.innerHTML = show ? EYE_OFF : EYE;
+      btn.setAttribute('aria-pressed', String(show));
+      btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+      btn.title = btn.getAttribute('aria-label');
+      input.focus();
+    });
+    input.before(wrap);
+    wrap.append(input, btn);
+    if (focused) input.focus();
+  });
+}
+new MutationObserver(() => addPasswordToggles(document)).observe(document.documentElement, { childList: true, subtree: true });
+addPasswordToggles(document);
