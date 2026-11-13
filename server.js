@@ -189,7 +189,7 @@ class HttpError extends Error {
 }
 const now = () => new Date().toISOString();
 // A response that is not JSON (file downloads).
-class Raw { constructor(body, headers) { this.body = body; this.headers = headers; } }
+class Raw { constructor(body, headers, status = 200) { this.body = body; this.headers = headers; this.status = status; } }
 // Folder paths: segments joined by "/", no empty segments, no stray spaces.
 const normFolder = (f) => str(f).split('/').map((x) => x.trim()).filter(Boolean).join('/').slice(0, 300);
 const parentOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
@@ -205,6 +205,8 @@ const USER_REF = 'INTEGER REFERENCES users(id) ON DELETE SET NULL';
 // Standalone ("ad hoc") runs live in one cycle per project.
 addColumn('cycles', 'adhoc', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('users', 'email', "TEXT NOT NULL DEFAULT ''");
+addColumn('users', 'oidc_issuer', "TEXT NOT NULL DEFAULT ''"); // set when the account is linked to a single sign-on identity
+addColumn('users', 'oidc_sub', "TEXT NOT NULL DEFAULT ''");
 addColumn('users', 'totp_secret', "TEXT NOT NULL DEFAULT ''"); // authenticator-app secret, encrypted
 addColumn('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
 addColumn('users', 'totp_last_step', 'INTEGER NOT NULL DEFAULT 0'); // the last accepted 30 second step, so a code works once
@@ -1409,6 +1411,7 @@ require('./routes/review').install(ctx);
 require('./routes/trash').install(ctx);
 require('./routes/views').install(ctx);
 require('./routes/webhooks').install(ctx);
+require('./routes/oidc').install(ctx);
 require('./routes/reports').install(ctx);
 require('./routes/plans').install(ctx);
 require('./routes/traceability').install(ctx);
@@ -1533,7 +1536,7 @@ const server = http.createServer(async (req, res) => {
       requestZone = (user && user.timezone) || '';
       const out = await r.handler({ params, body, query: url.searchParams, user, req, token: apiToken });
       security.audit({ method: req.method, pattern: r.pattern, path: p, params, body, user, token: apiToken, req, out });
-      if (out instanceof Raw) return send(res, 200, out.body, out.headers);
+      if (out instanceof Raw) return send(res, out.status, out.body, out.headers);
       return sendJson(res, 200, out);
     }
     throw new HttpError(404, 'Not found');

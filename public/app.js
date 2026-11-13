@@ -966,6 +966,9 @@ const initials = (n) => String(n || '?').split(/\s+/).filter(Boolean).slice(0, 2
 const forgotLine = () => (STATE.resetAvailable ? '<a href="#" id="forgot">Forgot your password?</a>' : 'Forgot your password? Ask an admin to reset it.');
 
 function renderAuth(needsSetup, message = '') {
+  // A failed single sign-on lands here as ?sso_error=…; show it once and tidy the address.
+  const ssoError = new URLSearchParams(location.search).get('sso_error');
+  if (ssoError) { message = ssoError; history.replaceState(null, '', location.pathname + location.hash); }
   stopNotifPolling();
   resetCasesUi(); // the next person to sign in on this tab starts with clean filters
   STATE.user = null;
@@ -990,6 +993,10 @@ function renderAuth(needsSetup, message = '') {
     STATE.resetAvailable = !!me.resetAvailable;
     const p = $('.authalt');
     if (p) { p.innerHTML = forgotLine(); bindForgot(); }
+    if (me.sso && me.sso.enabled && !$('#sso-btn')) {
+      const card = $('#auth-form');
+      card.insertAdjacentHTML('beforeend', `<p class="sso"><a class="btn ghost" id="sso-btn" href="/api/auth/oidc/login">${esc('Sign in with ' + me.sso.label)}</a></p>`);
+    }
   }).catch(() => {});
   $('#auth-form').onsubmit = async (e) => {
     e.preventDefault();
@@ -1159,6 +1166,42 @@ function openAccount() {
     });
 }
 $('#me').onclick = openAccount;
+
+async function viewSso() {
+  const c = await api('GET', '/api/settings/oidc');
+  view.innerHTML = `
+    <header class="head"><h1>Single sign-on</h1></header>
+    <p class="meta">Let people sign in with your company account through any OpenID Connect provider (Google, Microsoft Entra, Okta, Keycloak, Authentik…). Password sign-in keeps working, so you cannot lock yourself out.</p>
+    <section class="card"><form id="sso-form" class="form">
+      <p class="wide">Register this redirect address with your provider: <code id="sso-redirect">${esc(c.redirectUri)}</code></p>
+      <label class="check wide"><input type="checkbox" name="enabled"${c.enabled ? ' checked' : ''}> Turn on single sign-on</label>
+      <label class="wide">Issuer address<small>The provider's base address, for example https://accounts.example.com or https://login.microsoftonline.com/&lt;tenant&gt;/v2.0</small>
+        <input name="issuer" value="${esc(c.issuer)}" placeholder="https://" autocomplete="off"></label>
+      <label>Client ID<input name="clientId" value="${esc(c.clientId)}" autocomplete="off"></label>
+      <label>Client secret<small>${c.hasSecret ? 'Saved. Leave blank to keep it.' : 'Stored encrypted.'}</small><input name="clientSecret" type="password" autocomplete="new-password"></label>
+      <label>Button text<small>Shown as “Sign in with …”</small><input name="label" value="${esc(c.label)}" maxlength="40" placeholder="Company account"></label>
+      <label>Scopes<input name="scopes" value="${esc(c.scopes)}"></label>
+      <fieldset class="wide"><legend>People who have no account yet</legend>
+        <label class="check"><input type="checkbox" name="autoCreate"${c.autoCreate ? ' checked' : ''}> Create an account the first time they sign in</label>
+        <div class="two"><label>New accounts get the role<select name="defaultRole">${['tester', 'viewer'].map((r) => `<option${c.defaultRole === r ? ' selected' : ''}>${r}</option>`).join('')}</select></label>
+          <label>Only for these email domains<small>Comma separated. Blank allows any verified email.</small><input name="allowedDomains" value="${esc(c.allowedDomains)}" placeholder="example.com"></label></div>
+        <p class="muted">Existing accounts are matched by their verified email address the first time. Nobody is made an admin automatically.</p></fieldset>
+      <p class="wide rowbtns"><button type="submit" class="btn primary">Save</button> <button type="button" class="btn ghost" data-act="test">${withIcon('check', 'Test the provider')}</button> <span id="sso-result" class="muted" role="status"></span></p>
+    </form></section>`;
+  const form = $('#sso-form');
+  const body = () => ({ enabled: form.enabled.checked, issuer: form.issuer.value, clientId: form.clientId.value, clientSecret: form.clientSecret.value, label: form.label.value, scopes: form.scopes.value,
+    autoCreate: form.autoCreate.checked, defaultRole: form.defaultRole.value, allowedDomains: form.allowedDomains.value });
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api('PUT', '/api/settings/oidc', body()); toast('Saved'); router(); } catch (err) { fail(err); }
+  };
+  form.onclick = async (e) => {
+    if (!e.target.closest('[data-act=test]')) return;
+    const out = $('#sso-result'); out.textContent = 'Checking…';
+    try { const r = await api('POST', '/api/settings/oidc/test', { issuer: form.issuer.value }); out.textContent = `Reachable. ${r.keys} signing key${r.keys === 1 ? '' : 's'} published.`; }
+    catch (err) { out.textContent = err.message; }
+  };
+}
 
 async function viewWebhooks() {
   const { items, events, kinds } = await api('GET', `/api/projects/${STATE.pid}/webhooks`);
@@ -1341,6 +1384,7 @@ const ROUTES = [
   [/^#\/reports$/, 'reports', viewReports],
   [/^#\/trash$/, 'trash', viewTrash],
   [/^#\/webhooks$/, 'webhooks', viewWebhooks],
+  [/^#\/sso$/, 'sso', viewSso],
   [/^#\/users$/, 'users', viewUsers],
   [/^#\/integrations$/, 'integrations', viewIntegrations],
   [/^#\/api-tokens$/, 'api-tokens', viewApiTokens],
@@ -2582,7 +2626,7 @@ async function viewBug(id) {
   };
 }
 
-const NAV_ICONS = { webhooks: 'send', trash: 'trash', dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail', 'custom-fields': 'sliders', audit: 'file' };
+const NAV_ICONS = { sso: 'key', webhooks: 'send', trash: 'trash', dash: 'home', cases: 'list', plans: 'plan', cycles: 'cycle', bugs: 'bug', reports: 'chart', users: 'users', integrations: 'plug', 'api-tokens': 'key', notifications: 'bell', 'email-settings': 'mail', 'custom-fields': 'sliders', audit: 'file' };
 $$('#nav a').forEach((a) => { a.innerHTML = withIcon(NAV_ICONS[a.dataset.nav], a.textContent); });
 $('#new-project').innerHTML = withIcon('plus', 'New project');
 

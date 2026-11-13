@@ -9,6 +9,7 @@ const KEEP_LOGIN_DAYS = () => Math.min(3650, Math.max(30, Number(process.env.LOG
 const LABELS = {
   'POST /api/auth/setup': 'First admin account created',
   'POST /api/auth/password': 'Password changed',
+  'PUT /api/settings/oidc': 'Single sign-on settings changed',
   'POST /api/auth/2fa/enable': 'Two-factor sign-in turned on',
   'POST /api/auth/2fa/disable': 'Two-factor sign-in turned off',
   'POST /api/users/:id/2fa-reset': 'Two-factor sign-in reset by an admin',

@@ -82,10 +82,11 @@ function activeAdmins(exceptId) {
 
 function install(c) {
   ctx = c;
+  ctx.startSession = startSession;
   const { route, q, tx, now, str, need, HttpError } = c;
   const userCount = () => q('SELECT COUNT(*) n FROM users').get().n;
 
-  route('GET', '/api/auth/me', ({ user }) => ({ user: publicUser(user), needsSetup: userCount() === 0, resetAvailable: !!(ctx.resetAvailable && ctx.resetAvailable()) }), { public: true });
+  route('GET', '/api/auth/me', ({ user }) => ({ user: publicUser(user), needsSetup: userCount() === 0, resetAvailable: !!(ctx.resetAvailable && ctx.resetAvailable()), sso: ctx.ssoInfo ? ctx.ssoInfo() : { enabled: false } }), { public: true });
 
   route('POST', '/api/auth/setup', async ({ body, req }) => {
     if (userCount() > 0) throw new HttpError(403, 'Setup has already been completed');
