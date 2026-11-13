@@ -149,6 +149,48 @@ async function uploadImages(url, files) {
   for (const f of files) await api('POST', url, await fileToPayload(f));
 }
 
+// Comments and files on a test case or a run. Mounts into an element and keeps its own state, so typing in the
+// rest of the page is never lost when a comment is added.
+function mountDiscussion(box, type, id, data) {
+  if (!box) return;
+  const base = `/api/${type === 'case' ? 'cases' : 'executions'}/${id}`;
+  let comments = data.comments, atts = data.attachments;
+  const paint = () => {
+    box.innerHTML = `<h2>Comments and files</h2>
+      ${comments.length ? comments.map((c) => `<div class="comment"><div class="cmeta"><b>${esc(c.author || 'Former user')}</b> <span class="muted">${fmtDate(c.created_at)}</span>
+        ${c.user_id === STATE.user.id || STATE.user.role === 'admin' ? `<button type="button" class="icon small danger" data-dis="del" data-id="${c.id}" aria-label="Delete comment" title="Delete comment">${icon('trash')}</button>` : ''}</div>
+        <p class="pre">${esc(c.body)}</p></div>`).join('') : '<p class="muted">No comments yet. Use @username to notify someone.</p>'}
+      <label>Add a comment<textarea data-dis-text rows="3" maxlength="10000"></textarea></label>
+      <p><button type="button" class="btn primary small" data-dis="comment">${withIcon('plus', 'Comment')}</button></p>
+      <div class="shots large">${atts.map((a) => attHtml(a, { removable: true, annotate: true })).join('')}
+        <label class="btn small ghost">${withIcon('image', 'Add file')}<input type="file" accept="${ACCEPT}" multiple hidden data-dis-upload></label></div>`;
+  };
+  const refresh = async () => {
+    const d = await api('GET', type === 'case' ? `/api/cases/${id}` : `/api/executions/${id}`);
+    comments = d.comments; atts = d.attachments; paint();
+  };
+  box.onclick = async (e) => {
+    const t = e.target.closest('[data-dis], [data-act=rm-shot], [data-act=annotate]');
+    if (!t) return;
+    e.stopPropagation();
+    try {
+      if (t.dataset.dis === 'comment') {
+        const ta = box.querySelector('[data-dis-text]');
+        if (!ta.value.trim()) { ta.focus(); return; }
+        await api('POST', `${base}/comments`, { body: ta.value }); await refresh();
+      } else if (t.dataset.dis === 'del') { await api('DELETE', `/api/item-comments/${t.dataset.id}`); await refresh(); }
+      else if (t.dataset.act === 'rm-shot') { await api('DELETE', `/api/attachments/${t.dataset.id}`); await refresh(); }
+      else if (t.dataset.act === 'annotate') await openAnnotator(Number(t.dataset.id), refresh);
+    } catch (err) { fail(err); }
+  };
+  box.onchange = async (e) => {
+    if (!e.target.matches('[data-dis-upload]')) return;
+    e.stopPropagation();
+    try { await uploadImages(`${base}/attachments`, filesFrom(e.target.files)); await refresh(); } catch (err) { fail(err); }
+  };
+  paint();
+}
+
 // ---------- reports ----------
 // Status colours are validated for colour-blind separation; Fail and Blocked also carry a texture, and every
 // mark has a label, a tooltip and a table equivalent.
@@ -1579,12 +1621,14 @@ async function viewCaseEdit(id) {
     ${c.runs.length ? `<section class="card"><h2>Run history</h2>${c.runStats && c.runStats.runs ? `<p class="muted">${c.runStats.runs} decided run${c.runStats.runs === 1 ? '' : 's'}: ${c.runStats.fails} failed${c.runStats.switches >= 2 ? `, switched between pass and fail ${c.runStats.switches} times (possibly flaky)` : ''}${c.runStats.avg_ms ? `. Average time ${fmtMs(c.runStats.avg_ms)}` : ''}.</p>` : ''}<table><tbody>${c.runs.map((r) => `<tr>
       <td><a href="#/run/${r.id}">${r.adhoc ? 'Standalone run' : `<span class="key">${esc(r.cycle_key)}</span> ${esc(r.cycle_name)}`}</a></td>
       <td>${pill(r.status)}</td><td class="muted">${fmtDate(r.executed_at)}</td><td class="num muted">${fmtMs(r.duration_ms)}</td></tr>`).join('')}</tbody></table></section>` : ''}
+    ${isNew ? '' : '<section class="card" id="discuss"></section>'}
     ${isNew ? '' : `<section class="card"><h2>Version history</h2>
       <div class="tscroll"><table><thead><tr><th>Version</th><th>Saved</th><th>By</th><th>Note</th><th></th></tr></thead><tbody>
       ${history.map((h, i) => `<tr><td><b>v${h.version}</b>${i === 0 ? ' <span class="pill active">Current</span>' : ''}</td><td>${fmtDate(h.created_at)}</td><td>${esc(h.author || '—')}</td><td class="muted">${esc(h.note)}</td>
         <td class="num">${i === 0 ? '' : `<button type="button" class="btn small ghost" data-act="compare" data-v="${h.version}">Compare</button> <button type="button" class="btn small ghost" data-act="restore" data-v="${h.version}">${withIcon('rotate', 'Restore')}</button>`}</td></tr>`).join('')}
       </tbody></table></div></section>`}`;
 
+  if (!isNew) mountDiscussion($('#discuss'), 'case', id, c);
   view.onkeydown = (e) => {
     if (e.key === 'Enter' && e.target.closest('.addlink')) { e.preventDefault(); $('[data-act=add-link]').click(); }
   };
@@ -1949,7 +1993,9 @@ async function viewRun(id) {
       ${ex.steps.length ? ex.steps.map(stepCard).join('') : `<section class="card"><p class="empty">This test case has no steps. Set the result directly:</p>
         <p>${['Pass', 'Fail', 'Blocked'].map((v) => `<button class="btn st ${cls(v)}${ex.status === v ? ' on' : ''}" data-act="exec-status" data-v="${v}">${withIcon({ Pass: 'check', Fail: 'x', Blocked: 'ban' }[v], v)}</button>`).join(' ')}</p></section>`}
       <section class="card"><label>Run notes<textarea id="comment" rows="2" placeholder="Optional notes for this execution">${esc(ex.comment)}</textarea></label></section>
+      <section class="card" id="discuss"></section>
       <p class="muted keys">Shortcuts on the highlighted step: <kbd>P</kbd> pass · <kbd>F</kbd> fail · <kbd>B</kbd> blocked · <kbd>J</kbd>/<kbd>K</kbd> next / previous step</p>`;
+    mountDiscussion($('#discuss'), 'execution', ex.id, ex);
   };
 
   // Persist any typed-but-unsaved actual results before re-rendering.

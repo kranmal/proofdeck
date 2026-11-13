@@ -44,6 +44,7 @@ All of that user's sessions are ended.
 - **Jira Cloud, Jira Server / Data Center and GitHub**: send a bug as an issue (Jira gets the attachments; GitHub's API cannot take images).
   Optional **two-way status sync**: closing the issue resolves the bug (checked every few minutes, or instantly through a webhook) and,
   if you switch it on, resolving the bug closes the issue. Server / Data Center uses a personal access token and REST v2.
+- **Comments and files**: test cases and runs have a comments thread (use `@username` to notify someone; the owner, reviewer, assignee and earlier commenters hear about replies) and file attachments, like bugs do.
 - **Notifications**: in-app and email (your own SMTP server), instant or a daily summary per person, assigned/mentioned/status/due
   reminders, and password reset by email. Email is off until an admin configures it.
 - **Custom fields** (text, number, select, date, checkbox) on cases, bugs and cycles, optionally required.

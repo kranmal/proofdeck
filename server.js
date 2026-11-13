@@ -82,6 +82,11 @@ CREATE TABLE IF NOT EXISTS bug_comments (
   id INTEGER PRIMARY KEY, bug_id INTEGER NOT NULL REFERENCES bugs(id) ON DELETE CASCADE,
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, body TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS item_comments (
+  id INTEGER PRIMARY KEY, owner_type TEXT NOT NULL, owner_id INTEGER NOT NULL,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, body TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_item_comments_owner ON item_comments(owner_type, owner_id);
 CREATE TABLE IF NOT EXISTS case_versions (
   id INTEGER PRIMARY KEY, case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
   version INTEGER NOT NULL, snapshot TEXT NOT NULL, author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -165,6 +170,17 @@ CREATE INDEX IF NOT EXISTS idx_att_owner ON attachments(owner_type, owner_id);
 CREATE INDEX IF NOT EXISTS idx_steps_case ON steps(case_id);
 CREATE INDEX IF NOT EXISTS idx_exec_cycle ON executions(cycle_id);
 CREATE INDEX IF NOT EXISTS idx_sr_exec ON step_results(execution_id);
+`);
+// Comments and files on cases and runs have no foreign key (the owner can be either), so deletes clean up here.
+db.exec(`
+CREATE TRIGGER IF NOT EXISTS trg_case_gone AFTER DELETE ON cases BEGIN
+  DELETE FROM item_comments WHERE owner_type='case' AND owner_id=OLD.id;
+  DELETE FROM attachments WHERE owner_type='case' AND owner_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_execution_gone AFTER DELETE ON executions BEGIN
+  DELETE FROM item_comments WHERE owner_type='execution' AND owner_id=OLD.id;
+  DELETE FROM attachments WHERE owner_type='execution' AND owner_id=OLD.id;
+END;
 `);
 
 // ---------- helpers ----------
@@ -485,6 +501,9 @@ function saveAttachment(ownerType, ownerId, body) {
 const attachmentsOf = (type, id) =>
   q('SELECT id, filename, mime, size FROM attachments WHERE owner_type=? AND owner_id=? ORDER BY id').all(type, id);
 
+const commentsOf = (type, id) => q(`SELECT c.id, c.body, c.created_at, c.user_id, u.display_name AS author FROM item_comments c
+  LEFT JOIN users u ON u.id=c.user_id WHERE c.owner_type=? AND c.owner_id=? ORDER BY c.id`).all(type, id);
+
 const CYCLE_COUNTS = `
   COUNT(e.id) AS total,
   COALESCE(SUM(e.status='Pass'),0) AS pass, COALESCE(SUM(e.status='Fail'),0) AS fail,
@@ -680,6 +699,8 @@ route('GET', '/api/cases/:id', ({ params }) => {
   c.params = parseParams(c.params);
   c.links = links.linksOf(c);
   c.fields = fieldsApi.read('case', c.id);
+  c.comments = commentsOf('case', c.id);
+  c.attachments = attachmentsOf('case', c.id);
   if (c.script_type === 'bdd') { const g = gherkin.parseGherkin(c.bdd_script); c.bdd_steps = gherkin.gherkinSteps(g); c.bdd_examples = g.examples; c.bdd_errors = g.errors; }
   c.reviewer_name = c.reviewer_id ? (q('SELECT display_name FROM users WHERE id=?').get(c.reviewer_id) || {}).display_name || '' : '';
   c.approved_by_name = c.approved_by ? (q('SELECT display_name FROM users WHERE id=?').get(c.approved_by) || {}).display_name || '' : '';
@@ -1046,6 +1067,8 @@ route('GET', '/api/executions/:id', ({ params }) => {
     attachments: atts.filter((a) => a.owner_id === s.id),
     bugs: bugs.filter((b) => b.step_result_id === s.id),
   }));
+  ex.comments = commentsOf('execution', ex.id);
+  ex.attachments = attachmentsOf('execution', ex.id);
   ex.current_version = ex.case_id ? (q('SELECT version FROM cases WHERE id=?').get(ex.case_id) || {}).version || null : null;
   // In a cycle, previous/next walk the whole cycle. Standalone runs are unrelated to each other, so only the
   // data-set iterations started together (same run) are neighbours.
@@ -1231,6 +1254,43 @@ route('DELETE', '/api/bugs/:id', ({ params }) => tx(() => {
 route('POST', '/api/bugs/:id/attachments', ({ params, body }) => {
   need(q('SELECT 1 FROM bugs WHERE id=?').get(params.id), 'Bug');
   return saveAttachment('bug', params.id, body);
+});
+
+// Comments and files on test cases and executions. `what` says how to find the item and whom to tell.
+const ITEMS = {
+  case: {
+    load: (id) => need(q('SELECT id, project_id, key, title, created_by, reviewer_id FROM cases WHERE id=?').get(id), 'Test case'),
+    label: (x) => `${x.key}: ${x.title}`, short: (x) => x.key, link: (x) => `#/cases/${x.id}`,
+    people: (x) => [x.created_by, x.reviewer_id],
+  },
+  execution: {
+    load: (id) => need(q(`SELECT e.id, e.assignee_id, e.executed_by, c.project_id, e.case_key, e.case_title FROM executions e JOIN cycles c ON c.id=e.cycle_id WHERE e.id=?`).get(id), 'Execution'),
+    label: (x) => `${x.case_key}: ${x.case_title}`, short: (x) => `a run of ${x.case_key}`, link: (x) => `#/run/${x.id}`,
+    people: (x) => [x.assignee_id, x.executed_by],
+  },
+};
+function addItemComment(type, id, body, user) {
+  const spec = ITEMS[type], item = spec.load(id);
+  const text = str(body.body).trim();
+  if (!text) throw new HttpError(400, 'Comment is empty');
+  if (text.length > 10000) throw new HttpError(400, 'Comment is too long');
+  const cid = Number(q('INSERT INTO item_comments(owner_type, owner_id, user_id, body, created_at) VALUES (?,?,?,?,?)').run(type, item.id, user.id, text, now()).lastInsertRowid);
+  const link = spec.link(item), snippet = text.length > 300 ? `${text.slice(0, 300)}…` : text;
+  const mentioned = new Set(notifier.mentions(text));
+  for (const uid of mentioned) if (uid !== user.id) notifier.notify(uid, { kind: 'mention', title: `${user.display_name} mentioned you on ${spec.short(item)}`, body: snippet, link, projectId: item.project_id });
+  const watchers = new Set([...spec.people(item), ...q('SELECT DISTINCT user_id FROM item_comments WHERE owner_type=? AND owner_id=? AND user_id IS NOT NULL').all(type, item.id).map((r) => r.user_id)]);
+  for (const uid of watchers) if (uid && uid !== user.id && !mentioned.has(uid)) notifier.notify(uid, { kind: 'comment', title: `${user.display_name} commented on ${spec.label(item)}`, body: snippet, link, projectId: item.project_id });
+  return { id: cid };
+}
+for (const [type, base] of [['case', 'cases'], ['execution', 'executions']]) {
+  route('POST', `/api/${base}/:id/comments`, ({ params, body, user }) => addItemComment(type, params.id, body, user));
+  route('POST', `/api/${base}/:id/attachments`, ({ params, body }) => { ITEMS[type].load(params.id); return saveAttachment(type, params.id, body); });
+}
+route('DELETE', '/api/item-comments/:id', ({ params, user }) => {
+  const c = need(q('SELECT * FROM item_comments WHERE id=?').get(params.id), 'Comment');
+  if (c.user_id !== user.id && user.role !== 'admin') throw new HttpError(403, 'You can only delete your own comments');
+  q('DELETE FROM item_comments WHERE id=?').run(c.id);
+  return { ok: true };
 });
 
 // Replace an image in place (used by the screenshot annotator); id, owner and file name stay the same.
